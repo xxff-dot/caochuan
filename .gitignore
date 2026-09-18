@@ -1,0 +1,17 @@
+# 构建产物
+/caochuan
+/caochuan.exe
+caochuan.exe~
+caochuan-linux*
+/dist/
+
+# 运行时配置与日志（conf/*.example.json 受版本控制）
+conf/server.json
+conf/client.json
+client.json
+server.json
+*.log
+
+# 本地工具与临时产物
+.claude/
+shots/

@@ -1,0 +1,16 @@
+[Unit]
+Description=Caochuan TCP/UDP Forward (server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际情况修改 ExecStart 与路径；client 角色改为: caochuan client -c /opt/caochuan/client.json
+ExecStart=/opt/caochuan/caochuan server -c /opt/caochuan/server.json
+WorkingDirectory=/opt/caochuan
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

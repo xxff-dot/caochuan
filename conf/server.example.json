@@ -1,0 +1,11 @@
+{
+  "tunnel_addr": "0.0.0.0:7000",
+  "panel_addr": "0.0.0.0:7500",
+  "password": "改成你的面板密码",
+  "ip_whitelist": [],
+  "secret": "",
+  "clients": [
+    {"name": "client1", "token": "改成随机token，或删掉此项后在面板里添加"}
+  ],
+  "rules": []
+}

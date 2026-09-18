@@ -1,0 +1,8 @@
+module github.com/xxff-dot/caochuan
+
+go 1.27.1
+
+require (
+	github.com/xtaci/smux v1.5.57
+	golang.org/x/sys v0.48.0
+)
