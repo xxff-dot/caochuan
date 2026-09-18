@@ -2,5 +2,6 @@
   "server_addr": "服务器IP:7000",
   "token": "从面板客户端页获取",
   "no_tls": false,
-  "tls_fingerprint": "服务器启动日志/面板概览里的证书SHA-256指纹，填写后可防中间人"
+  "tls_fingerprint": "服务器启动日志/面板概览里的证书SHA-256指纹，填写后可防中间人",
+  "log_file": ""
 }

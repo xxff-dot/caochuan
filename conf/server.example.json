@@ -9,6 +9,7 @@
   "no_tls": false,
   "tls_cert": "",
   "tls_key": "",
+  "log_file": "",
   "clients": [
     {"name": "client1", "token": "改成随机token，或删掉此项后在面板里添加"}
   ],
