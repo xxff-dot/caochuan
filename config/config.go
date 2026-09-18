@@ -12,14 +12,17 @@ import (
 
 // Rule 一条转发规则。
 // Side 为空或 "server"：监听在服务器 —— Client 为空 = 正向（server 拨 Target），
-//                            Client 非空 = 穿透（该 client 拨 Target）。
+//
+//	Client 非空 = 穿透（该 client 拨 Target）。
+//
 // Side 为 "client"：反向 —— 该 client 监听 Listen 端口，访问流量经隧道由 server 拨 Target
-//                   （Target 从服务器视角解析，可以是服务器本身或其内网）。
+//
+//	（Target 从服务器视角解析，可以是服务器本身或其内网）。
 type Rule struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
-	Side      string   `json:"side,omitempty"`       // "server"(默认) | "client"
-	Proto     string   `json:"proto"`                // "tcp" | "udp"
+	Side      string   `json:"side,omitempty"` // "server"(默认) | "client"
+	Proto     string   `json:"proto"`          // "tcp" | "udp"
 	Listen    int      `json:"listen"`
 	Client    string   `json:"client"`
 	Target    string   `json:"target"`
@@ -46,22 +49,22 @@ type ClientUser struct {
 }
 
 type Server struct {
-	TunnelAddr string       `json:"tunnel_addr"`
-	PanelAddr  string       `json:"panel_addr"`
-	Password   string       `json:"password"`     // 面板登录密码
-	NoAuth     bool         `json:"no_auth,omitempty"` // 免密模式：跳过登录，仍受 IP 白名单限制
-	PanelPrefix string      `json:"panel_prefix"` // 面板随机路径前缀，防扫描爆破；留空则启动时自动生成
-	IPWhitelist []string    `json:"ip_whitelist"` // 手动 CIDR/IP 白名单；client 来源 IP 自动放行
-	Secret     string       `json:"secret"`       // 会话签名密钥，自动生成
-	NoTLS      bool         `json:"no_tls,omitempty"` // 关闭隧道 TLS（明文，不推荐）
-	TLSCert    string       `json:"tls_cert,omitempty"` // 自有证书路径；留空自动生成自签证书
-	TLSKey     string       `json:"tls_key,omitempty"`
-	LogFile    string       `json:"log_file,omitempty"` // 日志文件（空=仅输出到控制台）
-	NotifyURL    string     `json:"notify_url,omitempty"`     // WebHook 地址；client 上/下线、规则异常时 POST 通知
-	NotifyFormat string     `json:"notify_format,omitempty"`  // generic | dingtalk | feishu（默认 generic）
-	IPBlacklist  []string   `json:"ip_blacklist,omitempty"`   // IP/CIDR 黑名单，优先于一切放行规则
-	Clients    []ClientUser `json:"clients"`
-	Rules      []Rule       `json:"rules"`
+	TunnelAddr   string       `json:"tunnel_addr"`
+	PanelAddr    string       `json:"panel_addr"`
+	Password     string       `json:"password"`           // 面板登录密码
+	NoAuth       bool         `json:"no_auth,omitempty"`  // 免密模式：跳过登录，仍受 IP 白名单限制
+	PanelPrefix  string       `json:"panel_prefix"`       // 面板随机路径前缀，防扫描爆破；留空则启动时自动生成
+	IPWhitelist  []string     `json:"ip_whitelist"`       // 手动 CIDR/IP 白名单；client 来源 IP 自动放行
+	Secret       string       `json:"secret"`             // 会话签名密钥，自动生成
+	NoTLS        bool         `json:"no_tls,omitempty"`   // 关闭隧道 TLS（明文，不推荐）
+	TLSCert      string       `json:"tls_cert,omitempty"` // 自有证书路径；留空自动生成自签证书
+	TLSKey       string       `json:"tls_key,omitempty"`
+	LogFile      string       `json:"log_file,omitempty"`      // 日志文件（空=仅输出到控制台）
+	NotifyURL    string       `json:"notify_url,omitempty"`    // WebHook 地址；client 上/下线、规则异常时 POST 通知
+	NotifyFormat string       `json:"notify_format,omitempty"` // generic | dingtalk | feishu（默认 generic）
+	IPBlacklist  []string     `json:"ip_blacklist,omitempty"`  // IP/CIDR 黑名单，优先于一切放行规则
+	Clients      []ClientUser `json:"clients"`
+	Rules        []Rule       `json:"rules"`
 }
 
 // ACL 来源白名单：nil = 不限制。
@@ -116,6 +119,7 @@ type ClientConfig struct {
 	NoTLS          bool   `json:"no_tls,omitempty"`          // 与 server 端 no_tls 保持一致
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"` // 服务器证书 SHA-256 指纹（推荐填写防中间人）
 	LogFile        string `json:"log_file,omitempty"`        // 日志文件（空=仅输出到控制台）
+	Socks5Listen   string `json:"socks5_listen,omitempty"`   // SOCKS5 出口代理监听地址（如 "1080"）；留空=关闭
 }
 
 func RandToken() string {
@@ -205,5 +209,5 @@ func save(path string, v any) error {
 	return os.Rename(tmp, path)
 }
 
-func (s *Server) Save(path string) error { return save(path, s) }
+func (s *Server) Save(path string) error       { return save(path, s) }
 func (c *ClientConfig) Save(path string) error { return save(path, c) }

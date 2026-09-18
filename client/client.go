@@ -131,6 +131,16 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	// 旧会话的残留 goroutine 只会触到自己这份，不会污染新会话
 	rev := newReverseMgr()
 	rev.session = sess
+	gone := make(chan struct{})
+	rev.gone = gone
+	defer close(gone)
+	if c.Cfg.Socks5Listen != "" { // 会话级 SOCKS5 出口代理
+		addr := c.Cfg.Socks5Listen
+		if !strings.Contains(addr, ":") {
+			addr = "0.0.0.0:" + addr
+		}
+		go rev.startSocks5(addr)
+	}
 
 	mode := "TLS 加密"
 	if c.Cfg.NoTLS {
@@ -139,8 +149,6 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	slog.Info("已连接服务器", "addr", c.Cfg.ServerAddr, "加密", mode)
 	c.Log.Write([]byte(fmt.Sprintf("已连接服务器: %s (%s)\n", c.Cfg.ServerAddr, mode)))
 
-	gone := make(chan struct{}) // 会话结束时唤醒 ctx 监听 goroutine，避免泄漏
-	defer close(gone)
 	go func() { // ctx 取消时主动断会话
 		select {
 		case <-ctx.Done():

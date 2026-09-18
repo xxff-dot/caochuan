@@ -29,7 +29,7 @@ type AuthReply struct {
 // StreamHeader 每个 smux 数据流的第一帧。
 // UDP=true 时，后续载荷为 UDP 帧序列；否则为裸 TCP 字节流。
 type StreamHeader struct {
-	ID     string `json:"id,omitempty"`  // 规则 ID，供对端归集统计
+	ID     string `json:"id,omitempty"` // 规则 ID，供对端归集统计
 	Target string `json:"target"`
 	UDP    bool   `json:"udp,omitempty"`
 }

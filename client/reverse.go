@@ -36,7 +36,8 @@ type reverseMgr struct {
 	mu       sync.Mutex
 	wmu      sync.Mutex // 控制流写互斥：多个 start goroutine 并发 report 时帧不交错
 	session  *smux.Session
-	control  net.Conn // 控制流（回传状态用）
+	gone     chan struct{} // 会话结束信号：SOCKS5 等会话级监听靠它退出
+	control  net.Conn      // 控制流（回传状态用）
 	tcpLns   map[string]net.Listener
 	udpConns map[string]*net.UDPConn
 	rules    map[string]proto.ReverseRule

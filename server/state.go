@@ -25,7 +25,7 @@ type RuleView struct {
 	Conns      int64  `json:"conns"`
 	ConnsTotal int64  `json:"conns_total"`
 	Running    bool   `json:"running"`
-	Note       string `json:"note,omitempty"`  // 反向规则：client 侧监听失败原因等
+	Note       string `json:"note,omitempty"`   // 反向规则：client 侧监听失败原因等
 	Health     string `json:"health,omitempty"` // "ok" | "fail"（仅 TCP 规则有探测结果）
 	HealthErr  string `json:"health_err,omitempty"`
 }

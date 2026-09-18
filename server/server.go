@@ -35,8 +35,8 @@ type clientConn struct {
 	Session *smux.Session
 	Since   time.Time
 
-	cs     net.Conn      // 控制流：下发规则 / 接收状态
-	csmu   sync.Mutex    // 控制流写互斥
+	cs     net.Conn                        // 控制流：下发规则 / 接收状态
+	csmu   sync.Mutex                      // 控制流写互斥
 	status map[string]*proto.ReverseStatus // 反向规则最近一次监听状态（ruleID→status）
 }
 
@@ -61,18 +61,18 @@ type Server struct {
 	smuxCfg *smux.Config
 	certs   *CertManager
 
-	mu       sync.Mutex
-	cfg      *config.Server
-	clients  map[string]*clientConn // name → 在线 client
-	runners  map[string]*runner     // ruleID → 监听
-	stats    map[string]*Stat       // ruleID → 统计
-	hist     map[string]*history    // ruleID → 流量历史采样
-	health   map[string]*healthStatus // ruleID → 目标健康状态
-	notifier *notifier
+	mu        sync.Mutex
+	cfg       *config.Server
+	clients   map[string]*clientConn   // name → 在线 client
+	runners   map[string]*runner       // ruleID → 监听
+	stats     map[string]*Stat         // ruleID → 统计
+	hist      map[string]*history      // ruleID → 流量历史采样
+	health    map[string]*healthStatus // ruleID → 目标健康状态
+	notifier  *notifier
 	authFails map[string]*authFail // 隧道来源 IP → token 爆破记录
-	blVer    atomic.Int64         // 黑名单版本号：变更后监听循环重编译黑名单
-	started  time.Time
-	stopping bool
+	blVer     atomic.Int64         // 黑名单版本号：变更后监听循环重编译黑名单
+	started   time.Time
+	stopping  bool
 }
 
 // authFail 隧道 token 爆破记录（同面板登录防爆破逻辑）。
@@ -410,4 +410,3 @@ func (s *Server) openStreamTo(clientName string, hdr proto.StreamHeader) (net.Co
 	}
 	return stream, nil
 }
-

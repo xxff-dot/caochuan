@@ -12,8 +12,8 @@ const (
 )
 
 type histPoint struct {
-	T  int64 `json:"t"` // unix 秒
-	In int64 `json:"in"`
+	T   int64 `json:"t"` // unix 秒
+	In  int64 `json:"in"`
 	Out int64 `json:"out"`
 }
 
