@@ -23,10 +23,39 @@ func udpIP(a *net.UDPAddr) netip.Addr {
 
 // ---- TCP ----
 
+// visitorAllowed 规则监听侧的访客判定：黑名单优先，其次规则白名单。
+func (s *Server) visitorAllowed(ruleName string, remote net.Addr, acl *config.ACL, bl *config.ACL) bool {
+	var ip netip.Addr
+	if ap, err := netip.ParseAddrPort(remote.String()); err == nil {
+		ip = ap.Addr()
+	} else if a, aerr := netip.ParseAddr(remote.String()); aerr == nil {
+		ip = a.Unmap()
+	} else {
+		return false
+	}
+	if bl != nil && bl.Allows(ip) && !ip.IsLoopback() { // 回环豁免黑名单，防自锁
+		slog.Warn("规则拒绝黑名单来源", "rule", ruleName, "ip", ip)
+		return false
+	}
+	if !acl.Allows(ip) {
+		slog.Warn("规则白名单拒绝连接", "rule", ruleName, "ip", ip)
+		return false
+	}
+	return true
+}
+
 func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
 	acl, err := config.NewACL(rule.AllowFrom)
 	if err != nil {
 		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
+	s.mu.Lock()
+	bl, berr := config.NewACL(s.cfg.IPBlacklist)
+	blVer := s.blVer.Load()
+	s.mu.Unlock()
+	if berr != nil {
+		slog.Error("隧道黑名单配置无效，按无黑名单处理", "err", berr)
+		bl = nil
 	}
 	lim := relay.NewLimiter(rule.MaxMbps)
 	for {
@@ -34,16 +63,24 @@ func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
 		if err != nil {
 			return // 监听已关闭
 		}
+		if cur := s.blVer.Load(); cur != blVer { // 黑名单被修改，重编译
+			s.mu.Lock()
+			bl, berr = config.NewACL(s.cfg.IPBlacklist)
+			s.mu.Unlock()
+			if berr != nil {
+				bl = nil
+			}
+			blVer = cur
+		}
+		if !s.visitorAllowed(rule.Name, conn.RemoteAddr(), acl, bl) {
+			_ = conn.Close()
+			continue
+		}
 		go s.handleTCP(rule, conn, acl, lim)
 	}
 }
 
 func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter) {
-	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
-		slog.Warn("规则白名单拒绝连接", "rule", rule.Name, "ip", ap.Addr())
-		_ = visitor.Close()
-		return
-	}
 	st := s.statFor(rule.ID)
 	st.Conns.Add(1)
 	if rule.MaxConns > 0 && st.Conns.Load() > int64(rule.MaxConns) {
@@ -76,7 +113,7 @@ func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, 
 	defer backend.Close()
 	defer visitor.Close()
 
-	relay.Pipe(visitor, backend, &st.BytesIn, &st.BytesOut, lim)
+	relay.Pipe(visitor, backend, &st.BytesIn, &st.BytesOut, lim, time.Duration(rule.IdleMin)*time.Minute)
 }
 
 // ---- UDP：本地正向转发（visitor socket ⇄ target socket 的 NAT 式中继）----
@@ -86,6 +123,14 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 	acl, err := config.NewACL(rule.AllowFrom)
 	if err != nil {
 		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
+	s.mu.Lock()
+	bl, berr := config.NewACL(s.cfg.IPBlacklist)
+	blVer := s.blVer.Load()
+	s.mu.Unlock()
+	if berr != nil {
+		slog.Error("隧道黑名单配置无效，按无黑名单处理", "err", berr)
+		bl = nil
 	}
 	tgt, err := net.ResolveUDPAddr("udp", rule.Target)
 	if err != nil {
@@ -166,7 +211,16 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		if err != nil {
 			return
 		}
-		if !acl.Allows(udpIP(src)) {
+		if cur := s.blVer.Load(); cur != blVer { // 黑名单被修改，重编译
+			s.mu.Lock()
+			bl, berr = config.NewACL(s.cfg.IPBlacklist)
+			s.mu.Unlock()
+			if berr != nil {
+				bl = nil
+			}
+			blVer = cur
+		}
+		if !acl.Allows(udpIP(src)) || (bl != nil && bl.Allows(udpIP(src))) {
 			continue
 		}
 		mu.Lock()
@@ -198,6 +252,14 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 	acl, err := config.NewACL(rule.AllowFrom)
 	if err != nil {
 		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
+	s.mu.Lock()
+	bl, berr := config.NewACL(s.cfg.IPBlacklist)
+	blVer := s.blVer.Load()
+	s.mu.Unlock()
+	if berr != nil {
+		slog.Error("隧道黑名单配置无效，按无黑名单处理", "err", berr)
+		bl = nil
 	}
 	var mu sync.Mutex
 	lim := relay.NewLimiter(rule.MaxMbps)
@@ -266,8 +328,17 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 		if err != nil {
 			return
 		}
+		if cur := s.blVer.Load(); cur != blVer { // 黑名单被修改，重编译
+			s.mu.Lock()
+			bl, berr = config.NewACL(s.cfg.IPBlacklist)
+			s.mu.Unlock()
+			if berr != nil {
+				bl = nil
+			}
+			blVer = cur
+		}
 		mu.Lock()
-		if !acl.Allows(udpIP(src)) {
+		if !acl.Allows(udpIP(src)) || (bl != nil && bl.Allows(udpIP(src))) {
 			mu.Unlock()
 			continue
 		}

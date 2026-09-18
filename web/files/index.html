@@ -83,7 +83,7 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
       <div class="row"><button class="pri" onclick="openClient()">＋ 添加客户端</button>
         <span class="hint">把 token 填进内网机 client.json 即可接入</span></div>
       <div class="card"><table>
-        <thead><tr><th>状态</th><th>名称</th><th>Token</th><th>备注</th><th>来源地址</th><th>上线时间</th><th></th></tr></thead>
+        <thead><tr><th>状态</th><th>名称</th><th>Token</th><th>版本</th><th>备注</th><th>来源地址</th><th>上线时间</th><th></th></tr></thead>
         <tbody id="clients"></tbody></table></div>
     </section>
     <section id="tab-settings" hidden>
@@ -95,9 +95,20 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
         <button onclick="testNotify()">发送测试</button><span id="nt-msg" class="hint"></span></div>
       </div>
       <div class="card"><h3>面板 IP 白名单</h3>
-        <p class="hint">每行一个 IP 或 CIDR，如 192.168.1.0/24。在线客户端的来源 IP 始终自动放行；<b>留空时仅允许本机回环访问</b>。</p>
+        <p class="hint">每行一个 IP 或 CIDR，如 192.168.1.0/24。在线客户端的来源 IP 始终自动放行；<b>留空时仅允许本机访问</b>。</p>
         <textarea id="wl" rows="5" style="width:100%"></textarea>
         <div class="row" style="margin-top:10px"><button class="pri" onclick="saveWL()">保存白名单</button></div>
+      </div>
+      <div class="card"><h3>IP 黑名单</h3>
+        <p class="hint">每行一个 IP 或 CIDR。<b>黑名单优先于一切放行规则</b>：面板与隧道都会拒绝来自黑名单的连接。</p>
+        <textarea id="bl" rows="3" style="width:100%"></textarea>
+        <div class="row" style="margin-top:10px"><button class="pri" onclick="saveBL()">保存黑名单</button></div>
+      </div>
+      <div class="card"><h3>配置备份</h3>
+        <p class="hint">导出完整配置（含密码与 token，请妥善保管）。导入会恢复规则/客户端/白名单/黑名单/通知/密码，本机监听地址与随机路径保持不变。</p>
+        <div class="row"><button onclick="exportCfg()">导出配置</button>
+        <input type="file" id="imp-file" accept=".json" style="display:none" onchange="importCfg(this)">
+        <button onclick="$('#imp-file').click()">导入配置</button></div>
       </div>
       <div class="card"><h3>修改面板密码</h3>
         <div class="row"><input id="npw" type="password" placeholder="新密码" style="width:220px">
@@ -172,7 +183,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   tab=b.dataset.t;
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('act',x===b));
   document.querySelectorAll('main section').forEach(s=>s.hidden=s.id!=='tab-'+tab);
-  if(tab==='settings'){loadWL();loadNotify();}
+  if(tab==='settings'){loadWL();loadBL();loadNotify();}
 });
 
 /* ---- 通知设置 ---- */
@@ -238,9 +249,10 @@ async function refresh(){
       <td><span class="badge ${c.online?'on':'off'}">${c.online?'在线':'离线'}</span></td>
       <td>${esc(c.name)}</td>
       <td class="tok"><span class="muted">${c.token.slice(0,6)}…</span> <button class="mini" onclick="copyTok(this,'${c.token}')">复制</button></td>
+      <td>${esc(c.version||'-')}</td>
       <td>${esc(c.note)}</td><td>${esc(c.addr||'-')}</td><td>${esc(c.since||'-')}</td>
       <td><button class="mini danger" onclick="delClient('${esc(c.name)}')">删除</button></td></tr>`).join('')
-      ||'<tr><td colspan="7" class="muted">暂无客户端</td></tr>';
+      ||'<tr><td colspan="8" class="muted">暂无客户端</td></tr>';
     $('#f-client').innerHTML='<option value="s:">正向 — 服务器端口 → 任意目标</option>'+
       cl.map(c=>`<option value="s:${esc(c.name)}">穿透 — 服务器端口 → ${esc(c.name)} 内网目标</option>`).join('')+
       cl.map(c=>`<option value="c:${esc(c.name)}">反向 — ${esc(c.name)} 端口 → 服务器侧目标</option>`).join('');
@@ -309,14 +321,26 @@ function drawChart(pts){
 }
 function saveRule(){
   const [dir,client]=($('#f-client').value||'s:').split(':');
-  const body={name:$('#f-name').value.trim(),proto:$('#f-proto').value,
+  const listenStr=$('#f-listen').value.trim();
+  const mkBody=(name,listen)=>({name:name,proto:$('#f-proto').value,
     side:dir==='c'?'client':'server',client:client,
-    listen:+$('#f-listen').value||0,target:$('#f-target').value.trim(),
+    listen:listen,target:$('#f-target').value.trim(),
     allow_from:$('#f-allow').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    max_mbps:+$('#f-mbps').value||0,max_conns:+$('#f-maxconns').value||0};
-  const p=editingId?api('/api/rules/'+editingId,{method:'PUT',body:JSON.stringify(body)})
-                   :api('/api/rules',{method:'POST',body:JSON.stringify(body)});
-  p.then(()=>{dlgRule.close();refresh();}).catch(e=>alert(e.message));
+    max_mbps:+$('#f-mbps').value||0,max_conns:+$('#f-maxconns').value||0});
+  const baseName=$('#f-name').value.trim();
+  const m=listenStr.match(/^(\d{1,5})-(\d{1,5})$/);
+  let task;
+  if(m&&!editingId){ // 端口段批量建规则
+    const a=+m[1],b=+m[2];
+    if(b<a||b>65535)return alert('端口段无效');
+    task=(async()=>{for(let p=a;p<=b;p++){
+      await api('/api/rules',{method:'POST',body:JSON.stringify(mkBody(baseName+'-'+p,p))});}})();
+  }else if(editingId){
+    task=api('/api/rules/'+editingId,{method:'PUT',body:JSON.stringify(mkBody(baseName,+listenStr||0))});
+  }else{
+    task=api('/api/rules',{method:'POST',body:JSON.stringify(mkBody(baseName,+listenStr||0))});
+  }
+  task.then(()=>{dlgRule.close();refresh();}).catch(e=>alert(e.message));
 }
 function toggleRule(id,on){api('/api/rules/'+id+'/toggle',{method:'POST',body:JSON.stringify({enabled:on})}).then(refresh).catch(e=>alert(e.message));}
 function delRule(id,name){if(confirm('删除规则「'+name+'」？'))api('/api/rules/'+id,{method:'DELETE'}).then(refresh).catch(e=>alert(e.message));}
@@ -331,6 +355,20 @@ function delClient(name){if(confirm('删除客户端「'+name+'」？'))api('/ap
 async function loadWL(){try{const w=await api('/api/whitelist');$('#wl').value=w.entries.join('\n');}catch(e){}}
 function saveWL(){api('/api/whitelist',{method:'PUT',body:JSON.stringify({entries:$('#wl').value.split('\n').map(s=>s.trim()).filter(Boolean)})})
   .then(()=>alert('已保存')).catch(e=>alert(e.message));}
+async function loadBL(){try{const w=await api('/api/blacklist');$('#bl').value=w.entries.join('\n');}catch(e){}}
+function saveBL(){api('/api/blacklist',{method:'PUT',body:JSON.stringify({entries:$('#bl').value.split('\n').map(s=>s.trim()).filter(Boolean)})})
+  .then(()=>alert('已保存')).catch(e=>alert(e.message));}
+function exportCfg(){location.href=BASE+'/api/config/export';}
+async function importCfg(input){
+  const f=input.files[0]; if(!f)return;
+  if(!confirm('导入将覆盖当前规则/客户端/白名单/黑名单/通知/密码，确定？')){input.value='';return;}
+  try{
+    const text=await f.text();
+    await api('/api/config/import',{method:'POST',body:text});
+    alert('导入成功');refresh();
+  }catch(e){alert('导入失败：'+e.message);}
+  input.value='';
+}
 function savePW(){const p=$('#npw').value;if(!p)return alert('密码不能为空');
   api('/api/password',{method:'PUT',body:JSON.stringify({password:p})}).then(()=>{alert('已修改，下次登录用新密码');$('#npw').value='';}).catch(e=>alert(e.message));}
 

@@ -16,8 +16,9 @@ import (
 const maxFrame = 1 << 16 // 64KB，足够任何 JSON 头与单包 UDP 载荷
 
 type AuthRequest struct {
-	Token string `json:"token"`
-	Host  string `json:"host,omitempty"` // client 自报主机名，仅展示用
+	Token   string `json:"token"`
+	Host    string `json:"host,omitempty"`    // client 自报主机名，仅展示用
+	Version string `json:"version,omitempty"` // client 程序版本
 }
 
 type AuthReply struct {
@@ -53,6 +54,7 @@ type ReverseRule struct {
 	AllowFrom []string `json:"allow_from,omitempty"`
 	MaxMbps   int      `json:"max_mbps,omitempty"`
 	MaxConns  int      `json:"max_conns,omitempty"`
+	IdleMin   int      `json:"idle_min,omitempty"` // TCP 空闲超时（分钟），0=不限
 }
 
 // RulePush 控制流 server→client 帧。

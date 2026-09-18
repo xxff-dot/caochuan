@@ -26,6 +26,7 @@ type Rule struct {
 	AllowFrom []string `json:"allow_from,omitempty"` // 来源白名单（IP/CIDR），空=不限制
 	MaxMbps   int      `json:"max_mbps,omitempty"`   // 规则总带宽上限（Mbps），0=不限
 	MaxConns  int      `json:"max_conns,omitempty"`  // 最大并发连接/UDP 会话数，0=不限
+	IdleMin   int      `json:"idle_min,omitempty"`   // TCP 空闲超时（分钟），0=不限；UDP 会话固定 90s 过期
 	Enabled   bool     `json:"enabled"`
 }
 
@@ -58,6 +59,7 @@ type Server struct {
 	LogFile    string       `json:"log_file,omitempty"` // 日志文件（空=仅输出到控制台）
 	NotifyURL    string     `json:"notify_url,omitempty"`     // WebHook 地址；client 上/下线、规则异常时 POST 通知
 	NotifyFormat string     `json:"notify_format,omitempty"`  // generic | dingtalk | feishu（默认 generic）
+	IPBlacklist  []string   `json:"ip_blacklist,omitempty"`   // IP/CIDR 黑名单，优先于一切放行规则
 	Clients    []ClientUser `json:"clients"`
 	Rules      []Rule       `json:"rules"`
 }

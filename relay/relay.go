@@ -20,15 +20,15 @@ func (c counter) Write(p []byte) (int, error) {
 }
 
 // Pipe 在 a/b 间双向拷贝。计数器传 nil 表示不计数（aToB = a→b 方向字节）。
-// lim 为规则级共享限速器（可 nil），限制双向总带宽。
-func Pipe(a, b net.Conn, aToB, bToA *atomic.Int64, lim *Limiter) {
+// lim 为规则级共享限速器（可 nil）；idle>0 时任一方向超过该时长无数据即断开。
+func Pipe(a, b net.Conn, aToB, bToA *atomic.Int64, lim *Limiter, idle time.Duration) {
 	done := make(chan struct{}, 1)
 	go func() {
-		_, _ = io.Copy(writer{w: b, n: aToB, lim: lim}, reader{r: a})
+		_, _ = io.Copy(writer{w: b, n: aToB, lim: lim}, reader{r: a, idle: idle})
 		_ = b.SetDeadline(time.Now()) // 中断 b→a 的 Copy
 		done <- struct{}{}
 	}()
-	_, _ = io.Copy(writer{w: a, n: bToA, lim: lim}, reader{r: b})
+	_, _ = io.Copy(writer{w: a, n: bToA, lim: lim}, reader{r: b, idle: idle})
 	_ = a.SetDeadline(time.Now())
 	<-done
 }
@@ -49,12 +49,19 @@ func (c writer) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// reader 用小切块读，让限速粒度细到 16KB 而不是 io.Copy 默认 32KB。
-type reader struct{ r io.Reader }
+// reader 用小切块读，让限速粒度细到 16KB 而不是 io.Copy 默认 32KB；
+// idle>0 时每次读前刷新读截止时间，空闲即超时断开。
+type reader struct {
+	r    io.Reader
+	idle time.Duration
+}
 
 func (c reader) Read(p []byte) (int, error) {
 	if len(p) > 16<<10 {
 		p = p[:16<<10]
+	}
+	if d, ok := c.r.(interface{ SetReadDeadline(time.Time) error }); ok && c.idle > 0 {
+		_ = d.SetReadDeadline(time.Now().Add(c.idle))
 	}
 	return c.r.Read(p)
 }

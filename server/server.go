@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,7 @@ type Stat struct {
 type clientConn struct {
 	Name    string
 	Addr    string
+	Version string
 	Session *smux.Session
 	Since   time.Time
 
@@ -68,6 +70,7 @@ type Server struct {
 	health   map[string]*healthStatus // ruleID → 目标健康状态
 	notifier *notifier
 	authFails map[string]*authFail // 隧道来源 IP → token 爆破记录
+	blVer    atomic.Int64         // 黑名单版本号：变更后监听循环重编译黑名单
 	started  time.Time
 	stopping bool
 }
@@ -203,15 +206,27 @@ func (s *Server) handleTunnel(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	host, _, _ := net.SplitHostPort(remote)
 
-	// token 防爆破：锁定期内直接断开
+	// 黑名单与 token 防爆破：锁定期内直接断开
 	s.mu.Lock()
 	s.sweepAuthFails(time.Now())
-	if f := s.authFails[host]; f != nil && time.Now().Before(f.until) {
+	if f := s.authFails[host]; f != nil && time.Now().Before(f.until) && !net.ParseIP(host).IsLoopback() {
 		s.mu.Unlock()
 		slog.Warn("隧道来源被锁定，拒绝连接", "ip", host)
 		return
 	}
+	bl, err := config.NewACL(s.cfg.IPBlacklist)
+	if err != nil {
+		slog.Error("隧道黑名单配置无效，按无黑名单处理", "err", err)
+		bl = nil
+	}
 	s.mu.Unlock()
+	// 注意：nil ACL 表示「无黑名单」，不能当作命中；回环豁免防自锁
+	if bl != nil {
+		if ip, perr := netip.ParseAddr(host); perr == nil && bl.Allows(ip) && !ip.IsLoopback() {
+			slog.Warn("隧道来源在黑名单中，拒绝连接", "ip", host)
+			return
+		}
+	}
 
 	var req proto.AuthRequest
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -240,7 +255,7 @@ func (s *Server) handleTunnel(conn net.Conn) {
 		return
 	}
 
-	cc := &clientConn{Name: name, Addr: conn.RemoteAddr().String(), Session: sess, Since: time.Now(),
+	cc := &clientConn{Name: name, Addr: conn.RemoteAddr().String(), Version: req.Version, Session: sess, Since: time.Now(),
 		status: map[string]*proto.ReverseStatus{}}
 	s.mu.Lock()
 	if old := s.clients[name]; old != nil {

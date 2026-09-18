@@ -86,7 +86,7 @@ func runClient(ctx context.Context, args []string, ring *logbuf.Ring) error {
 		}
 		return fmt.Errorf("读取配置失败: %w", err)
 	}
-	c := &client.Client{Cfg: cfg, Log: ring}
+	c := &client.Client{Cfg: cfg, Log: ring, Version: version}
 	setupLogger(ring, cfg.LogFile)
 	slog.Info("客户端启动", "server", cfg.ServerAddr)
 	return c.Run(ctx)

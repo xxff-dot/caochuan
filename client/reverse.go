@@ -218,7 +218,7 @@ func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *confi
 	}
 	defer stream.Close()
 
-	relay.Pipe(visitor, stream, nil, nil, lim)
+	relay.Pipe(visitor, stream, nil, nil, lim, time.Duration(r.IdleMin)*time.Minute)
 }
 
 // udpRelay 本地 visitor ⇄ 隧道 UDP 帧流（镜像 server.udpTunnelRelay，方向相反）。

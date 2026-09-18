@@ -52,7 +52,7 @@ func (s *Server) handleReverseStream(cc *clientConn, stream net.Conn) {
 	st.Conns.Add(1)
 	defer st.Conns.Add(-1)
 
-	relay.Pipe(stream, backend, &st.BytesIn, &st.BytesOut, nil) // 限速在 client 监听侧执行
+	relay.Pipe(stream, backend, &st.BytesIn, &st.BytesOut, nil, 0) // 限速在 client 监听侧执行
 }
 
 // udpBackendFromStream 处理反向 UDP 流：connID → 服务器侧到 target 的 socket（镜像 client 同名逻辑）。
@@ -173,7 +173,7 @@ func (s *Server) pushRulesTo(cc *clientConn) {
 		if r.SideOf() == "client" && r.Client == cc.Name && r.Enabled {
 			rules = append(rules, proto.ReverseRule{ID: r.ID, Name: r.Name, Proto: r.Proto,
 				Listen: r.Listen, Target: r.Target, AllowFrom: r.AllowFrom,
-				MaxMbps: r.MaxMbps, MaxConns: r.MaxConns})
+				MaxMbps: r.MaxMbps, MaxConns: r.MaxConns, IdleMin: r.IdleMin})
 		}
 	}
 	cs := cc.cs

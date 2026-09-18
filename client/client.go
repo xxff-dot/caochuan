@@ -31,8 +31,9 @@ const (
 )
 
 type Client struct {
-	Cfg *config.ClientConfig
-	Log *logbuf.Ring
+	Cfg     *config.ClientConfig
+	Log     *logbuf.Ring
+	Version string // 程序版本，鉴权时上报
 }
 
 // Run 阻塞运行：连接 → 鉴权 → 收流；断线后指数退避重连，直到 ctx 取消。
@@ -106,7 +107,7 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	defer conn.Close()
 
 	host, _ := os.Hostname()
-	req := proto.AuthRequest{Token: c.Cfg.Token, Host: host}
+	req := proto.AuthRequest{Token: c.Cfg.Token, Host: host, Version: c.Version}
 	if err := proto.WriteJSONFrame(conn, req); err != nil {
 		return fmt.Errorf("发送鉴权失败: %w", err)
 	}
@@ -187,7 +188,7 @@ func (c *Client) handleStream(stream net.Conn, rev *reverseMgr) {
 	}
 	defer backend.Close()
 
-	relay.Pipe(backend, stream, nil, nil, nil)
+	relay.Pipe(backend, stream, nil, nil, nil, 0)
 }
 
 // handleUDPStream 在一条流里按 connID 分发到多个本地 UDP socket。

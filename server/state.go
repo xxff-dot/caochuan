@@ -32,12 +32,13 @@ type RuleView struct {
 
 // ClientView 客户端条目（含 token，面板要展示给用户配 client 用）。
 type ClientView struct {
-	Name   string `json:"name"`
-	Token  string `json:"token"`
-	Note   string `json:"note"`
-	Online bool   `json:"online"`
-	Addr   string `json:"addr,omitempty"`
-	Since  string `json:"since,omitempty"`
+	Name    string `json:"name"`
+	Token   string `json:"token"`
+	Note    string `json:"note"`
+	Online  bool   `json:"online"`
+	Addr    string `json:"addr,omitempty"`
+	Since   string `json:"since,omitempty"`
+	Version string `json:"version,omitempty"`
 }
 
 func (s *Server) ListRules() []RuleView {
@@ -100,6 +101,9 @@ func validateRule(r *config.Rule, clients []config.ClientUser) error {
 	}
 	if r.MaxMbps < 0 || r.MaxConns < 0 {
 		return fmt.Errorf("限速/连接数上限不能为负数")
+	}
+	if r.IdleMin < 0 || r.IdleMin > 24*60 {
+		return fmt.Errorf("空闲超时须在 0-1440 分钟之间")
 	}
 	if r.Client != "" { // 穿透/反向规则必须指向已登记的客户端
 		found := false
@@ -255,6 +259,7 @@ func (s *Server) ListClients() []ClientView {
 			v.Online = true
 			v.Addr = cc.Addr
 			v.Since = cc.Since.Format(time.DateTime)
+			v.Version = cc.Version
 		}
 		out = append(out, v)
 	}
@@ -305,12 +310,8 @@ func (s *Server) IPWhitelist() []string {
 }
 
 func (s *Server) SetIPWhitelist(entries []string) error {
-	for _, e := range entries {
-		if _, err := netip.ParsePrefix(e); err != nil {
-			if _, err2 := netip.ParseAddr(e); err2 != nil {
-				return fmt.Errorf("无效的 IP/CIDR: %q", e)
-			}
-		}
+	if _, err := config.NewACL(entries); entries != nil && err != nil {
+		return fmt.Errorf("无效的 IP/CIDR: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,7 +324,119 @@ func (s *Server) SetIPWhitelist(entries []string) error {
 	return nil
 }
 
-// IPAllowed 面板访问判定：本机回环 ∪ 本机任意网卡地址 ∪ 手动白名单 ∪ 在线 client 来源 IP。
+// IPBlacklist 返回黑名单条目。
+func (s *Server) IPBlacklist() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string{}, s.cfg.IPBlacklist...)
+}
+
+// SetIPBlacklist 设置黑名单（IP/CIDR）。黑名单优先于一切放行规则。
+func (s *Server) SetIPBlacklist(entries []string) error {
+	if _, err := config.NewACL(entries); entries != nil && err != nil {
+		return fmt.Errorf("无效的 IP/CIDR: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.cfg.IPBlacklist
+	s.cfg.IPBlacklist = entries
+	if err := s.cfg.Save(s.CfgPath); err != nil {
+		s.cfg.IPBlacklist = old
+		return err
+	}
+	s.blVer.Add(1) // 通知监听循环重编译黑名单
+	return nil
+}
+
+// ExportConfig 返回完整配置的深拷贝（含密码/token，供面板导出）。
+func (s *Server) ExportConfig() config.Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *s.cfg
+	cp.Clients = append([]config.ClientUser{}, s.cfg.Clients...)
+	cp.Rules = append([]config.Rule{}, s.cfg.Rules...)
+	cp.IPWhitelist = append([]string{}, s.cfg.IPWhitelist...)
+	cp.IPBlacklist = append([]string{}, s.cfg.IPBlacklist...)
+	return cp
+}
+
+// ImportConfig 从导出的配置恢复业务数据（规则/客户端/白名单/黑名单/通知/密码）。
+// 网络身份字段（监听地址、随机路径、secret、TLS）保持本机现值，避免导入后面板失联。
+func (s *Server) ImportConfig(in config.Server) error {
+	s.mu.Lock()
+	old := *s.cfg
+	oldClients := append([]config.ClientUser{}, s.cfg.Clients...)
+	oldRules := append([]config.Rule{}, s.cfg.Rules...)
+	oldWl := append([]string{}, s.cfg.IPWhitelist...)
+	oldBl := append([]string{}, s.cfg.IPBlacklist...)
+
+	s.cfg.Password = in.Password
+	s.cfg.NoAuth = in.NoAuth
+	s.cfg.IPWhitelist = in.IPWhitelist
+	s.cfg.IPBlacklist = in.IPBlacklist
+	s.cfg.NotifyURL = in.NotifyURL
+	s.cfg.NotifyFormat = in.NotifyFormat
+	s.cfg.LogFile = in.LogFile
+	s.cfg.Clients = in.Clients
+	s.cfg.Rules = in.Rules
+
+	if _, err := config.NewACL(s.cfg.IPWhitelist); err != nil {
+		s.restoreCfg(old, oldClients, oldRules, oldWl, oldBl)
+		s.mu.Unlock()
+		return fmt.Errorf("白名单无效: %w", err)
+	}
+	if _, err := config.NewACL(s.cfg.IPBlacklist); err != nil {
+		s.restoreCfg(old, oldClients, oldRules, oldWl, oldBl)
+		s.mu.Unlock()
+		return fmt.Errorf("黑名单无效: %w", err)
+	}
+	for i := range s.cfg.Rules {
+		if err := validateRule(&s.cfg.Rules[i], s.cfg.Clients); err != nil {
+			s.restoreCfg(old, oldClients, oldRules, oldWl, oldBl)
+			s.mu.Unlock()
+			return fmt.Errorf("规则 %q 无效: %w", s.cfg.Rules[i].Name, err)
+		}
+	}
+	if err := s.cfg.Save(s.CfgPath); err != nil {
+		s.restoreCfg(old, oldClients, oldRules, oldWl, oldBl)
+		s.mu.Unlock()
+		return err
+	}
+	s.notifier.set(in.NotifyURL, in.NotifyFormat)
+	// 客户端可能有变化：重连校验（在线但已删的踢掉），规则重新 diff，最后广播
+	for name, cc := range s.clients {
+		found := false
+		for _, c := range s.cfg.Clients {
+			if c.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cc.Session.Close()
+		}
+	}
+	s.applyRulesLocked()
+	s.mu.Unlock()
+	s.broadcastRules()
+	return nil
+}
+
+// restoreCfg 导入失败时回滚（调用方持有 s.mu）。
+func (s *Server) restoreCfg(old config.Server, clients []config.ClientUser, rules []config.Rule, wl, bl []string) {
+	s.cfg.Password = old.Password
+	s.cfg.NoAuth = old.NoAuth
+	s.cfg.IPWhitelist = wl
+	s.cfg.IPBlacklist = bl
+	s.cfg.NotifyURL = old.NotifyURL
+	s.cfg.NotifyFormat = old.NotifyFormat
+	s.cfg.LogFile = old.LogFile
+	s.cfg.Clients = clients
+	s.cfg.Rules = rules
+	s.notifier.set(old.NotifyURL, old.NotifyFormat)
+}
+
+// IPAllowed 面板访问判定：黑名单（回环豁免，防自锁）优先拒绝；否则 本机回环 ∪ 本机任意网卡地址 ∪ 手动白名单 ∪ 在线 client 来源 IP。
 // 本机地址放行是为了让「反向隧道访问面板」可用——那种请求的源地址就是服务器自己。
 func (s *Server) IPAllowed(ipStr string) bool {
 	ip, err := netip.ParseAddr(ipStr)
@@ -333,6 +446,12 @@ func (s *Server) IPAllowed(ipStr string) bool {
 	ip = ip.Unmap()
 	if ip.IsLoopback() {
 		return true
+	}
+	s.mu.Lock()
+	bl, berr := config.NewACL(s.cfg.IPBlacklist)
+	s.mu.Unlock()
+	if berr == nil && bl != nil && bl.Allows(ip) {
+		return false // 黑名单优先于除回环外的一切放行
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {

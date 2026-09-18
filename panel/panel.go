@@ -155,6 +155,41 @@ func (p *Panel) apiHandler() *http.ServeMux {
 		}
 		return p.Srv.SetIPWhitelist(req.Entries)
 	}))
+
+	mux.HandleFunc("GET /api/blacklist", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		writeJSON(w, map[string]any{"entries": p.Srv.IPBlacklist()})
+		return nil
+	}))
+	mux.HandleFunc("PUT /api/blacklist", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		req, err := decode[struct{ Entries []string }](r)
+		if err != nil {
+			return err
+		}
+		return p.Srv.SetIPBlacklist(req.Entries)
+	}))
+
+	mux.HandleFunc("GET /api/config/export", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Disposition", "attachment; filename=caochuan-server.json")
+		writeJSON(w, p.Srv.ExportConfig())
+		return nil
+	}))
+	mux.HandleFunc("POST /api/config/import", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		req, err := decode[config.Server](r)
+		if err != nil {
+			return err
+		}
+		return p.Srv.ImportConfig(*req)
+	}))
+
+	// Prometheus 指标：无需登录（供采集器抓取），仍受白名单与随机路径保护
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if !p.Srv.IPAllowed(clientIP(r)) {
+			writeErr(w, &apiErr{http.StatusForbidden, "IP 不在白名单"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		p.writeMetrics(w)
+	})
 	mux.HandleFunc("PUT /api/password", p.auth(func(w http.ResponseWriter, r *http.Request) error {
 		req, err := decode[struct{ Password string }](r)
 		if err != nil {
