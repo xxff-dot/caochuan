@@ -108,6 +108,10 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
   <label>方向</label><select id="f-client"></select>
   <label>目标地址（正向/反向以服务器视角解析；穿透以客户端视角解析）</label><input id="f-target" placeholder="127.0.0.1:80">
   <label>来源白名单（每行一个 IP/CIDR，留空=不限制）</label><textarea id="f-allow" rows="2" placeholder="192.168.1.0/24"></textarea>
+  <div style="display:flex;gap:10px">
+    <div style="flex:1"><label>限速上限 Mbps（0=不限）</label><input id="f-mbps" type="number" min="0" value="0"></div>
+    <div style="flex:1"><label>连接数上限（0=不限）</label><input id="f-maxconns" type="number" min="0" value="0"></div>
+  </div>
   <div class="acts"><button onclick="dlgRule.close()">取消</button><button class="pri" onclick="saveRule()">保存</button></div>
 </dialog>
 
@@ -226,10 +230,11 @@ function copyTok(btn,tok){navigator.clipboard.writeText(tok);btn.textContent='�
 function openRule(id){
   editingId=id||null;
   $('#dlgRuleTitle').textContent=id?'编辑规则':'新建规则';
-  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';$('#f-allow').value='';
+  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';$('#f-allow').value='';$('#f-mbps').value='0';$('#f-maxconns').value='0';
   if(id){api('/api/rules').then(rl=>{const x=rl.find(v=>v.id===id);if(!x)return;
       $('#f-name').value=x.name;$('#f-proto').value=x.proto;$('#f-listen').value=x.listen;
       $('#f-target').value=x.target;$('#f-allow').value=(x.allow_from||[]).join('\n');
+      $('#f-mbps').value=x.max_mbps||0;$('#f-maxconns').value=x.max_conns||0;
       $('#f-client').value=(x.side==='client'?'c:':'s:')+(x.client||'');syncListenLabel();});}
   else {$('#f-client').value='s:';syncListenLabel();}
   dlgRule.showModal();
@@ -286,7 +291,8 @@ function saveRule(){
   const body={name:$('#f-name').value.trim(),proto:$('#f-proto').value,
     side:dir==='c'?'client':'server',client:client,
     listen:+$('#f-listen').value||0,target:$('#f-target').value.trim(),
-    allow_from:$('#f-allow').value.split('\n').map(s=>s.trim()).filter(Boolean)};
+    allow_from:$('#f-allow').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    max_mbps:+$('#f-mbps').value||0,max_conns:+$('#f-maxconns').value||0};
   const p=editingId?api('/api/rules/'+editingId,{method:'PUT',body:JSON.stringify(body)})
                    :api('/api/rules',{method:'POST',body:JSON.stringify(body)});
   p.then(()=>{dlgRule.close();refresh();}).catch(e=>alert(e.message));

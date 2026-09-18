@@ -86,6 +86,9 @@ func validateRule(r *config.Rule, clients []config.ClientUser) error {
 	if _, err := config.NewACL(r.AllowFrom); err != nil {
 		return fmt.Errorf("来源白名单无效: %w", err)
 	}
+	if r.MaxMbps < 0 || r.MaxConns < 0 {
+		return fmt.Errorf("限速/连接数上限不能为负数")
+	}
 	if r.Client != "" { // 穿透/反向规则必须指向已登记的客户端
 		found := false
 		for _, c := range clients {

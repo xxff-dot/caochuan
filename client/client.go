@@ -187,7 +187,7 @@ func (c *Client) handleStream(stream net.Conn, rev *reverseMgr) {
 	}
 	defer backend.Close()
 
-	relay.Pipe(backend, stream, nil, nil)
+	relay.Pipe(backend, stream, nil, nil, nil)
 }
 
 // handleUDPStream 在一条流里按 connID 分发到多个本地 UDP socket。

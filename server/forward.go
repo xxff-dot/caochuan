@@ -28,24 +28,31 @@ func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
 	if err != nil {
 		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
 	}
+	lim := relay.NewLimiter(rule.MaxMbps)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return // 监听已关闭
 		}
-		go s.handleTCP(rule, conn, acl)
+		go s.handleTCP(rule, conn, acl, lim)
 	}
 }
 
-func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL) {
+func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter) {
 	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
 		slog.Warn("规则白名单拒绝连接", "rule", rule.Name, "ip", ap.Addr())
 		_ = visitor.Close()
 		return
 	}
 	st := s.statFor(rule.ID)
-	st.ConnsTotal.Add(1)
 	st.Conns.Add(1)
+	if rule.MaxConns > 0 && st.Conns.Load() > int64(rule.MaxConns) {
+		st.Conns.Add(-1)
+		slog.Warn("超过连接数上限，拒绝连接", "rule", rule.Name, "max", rule.MaxConns)
+		_ = visitor.Close()
+		return
+	}
+	st.ConnsTotal.Add(1)
 	defer st.Conns.Add(-1)
 
 	var backend net.Conn
@@ -69,7 +76,7 @@ func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL) 
 	defer backend.Close()
 	defer visitor.Close()
 
-	relay.Pipe(visitor, backend, &st.BytesIn, &st.BytesOut)
+	relay.Pipe(visitor, backend, &st.BytesIn, &st.BytesOut, lim)
 }
 
 // ---- UDP：本地正向转发（visitor socket ⇄ target socket 的 NAT 式中继）----
@@ -104,6 +111,7 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		}
 	}()
 	var mu sync.Mutex
+	lim := relay.NewLimiter(rule.MaxMbps)
 	backends := map[string]*net.UDPConn{} // visitor 地址 → 后端 socket
 
 	getBackend := func(visitor *net.UDPAddr) *net.UDPConn {
@@ -161,6 +169,14 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		if !acl.Allows(udpIP(src)) {
 			continue
 		}
+		mu.Lock()
+		full := rule.MaxConns > 0 && len(backends) >= rule.MaxConns &&
+			backends[src.String()] == nil
+		mu.Unlock()
+		if full {
+			continue // 超过会话上限，丢弃新访客的包
+		}
+		lim.Wait(n)
 		if b := getBackend(src); b != nil {
 			if _, err := b.Write(buf[:n]); err == nil {
 				st.BytesIn.Add(int64(n))
@@ -184,6 +200,7 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
 	}
 	var mu sync.Mutex
+	lim := relay.NewLimiter(rule.MaxMbps)
 	var stream net.Conn // 当前隧道流；断线后由下一个包触发重开
 	visitors := map[string]*visitorEntry{}
 	nextID := uint32(0)
@@ -256,6 +273,10 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 		}
 		key := src.String()
 		v := visitors[key]
+		if v == nil && rule.MaxConns > 0 && len(visitors) >= rule.MaxConns {
+			mu.Unlock()
+			continue // 超过会话上限，丢弃新访客的包
+		}
 		if v == nil {
 			nextID++
 			v = &visitorEntry{id: nextID, addr: src}
@@ -279,6 +300,7 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 		if sc = ensure(); sc == nil {
 			continue
 		}
+		lim.Wait(n)
 		if err := proto.WriteUDPPacket(sc, &proto.UDPPacket{ConnID: v.id, Payload: buf[:n]}); err == nil {
 			st.BytesIn.Add(int64(n))
 		}

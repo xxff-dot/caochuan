@@ -51,6 +51,8 @@ type ReverseRule struct {
 	Listen    int      `json:"listen"`
 	Target    string   `json:"target"`
 	AllowFrom []string `json:"allow_from,omitempty"`
+	MaxMbps   int      `json:"max_mbps,omitempty"`
+	MaxConns  int      `json:"max_conns,omitempty"`
 }
 
 // RulePush 控制流 server→client 帧。

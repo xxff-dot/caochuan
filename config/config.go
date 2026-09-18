@@ -24,6 +24,8 @@ type Rule struct {
 	Client    string   `json:"client"`
 	Target    string   `json:"target"`
 	AllowFrom []string `json:"allow_from,omitempty"` // 来源白名单（IP/CIDR），空=不限制
+	MaxMbps   int      `json:"max_mbps,omitempty"`   // 规则总带宽上限（Mbps），0=不限
+	MaxConns  int      `json:"max_conns,omitempty"`  // 最大并发连接/UDP 会话数，0=不限
 	Enabled   bool     `json:"enabled"`
 }
 

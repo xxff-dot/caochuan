@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -137,6 +138,8 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 	}
 	switch r.Proto {
 	case "tcp":
+		lim := relay.NewLimiter(r.MaxMbps)
+		var cnt atomic.Int64 // 本规则当前连接数
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", r.Listen))
 		if err != nil {
 			m.report(proto.ReverseStatus{ID: r.ID, OK: false, Err: err.Error()})
@@ -154,7 +157,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 			if err != nil {
 				return // 关闭/会话断开
 			}
-			go m.handleTCP(r, conn, acl)
+			go m.handleTCP(r, conn, acl, lim, &cnt)
 		}
 	case "udp":
 		up, err := net.ListenUDP("udp", &net.UDPAddr{Port: r.Listen})
@@ -169,7 +172,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 		m.udpConns[r.ID] = up
 		m.mu.Unlock()
 		m.report(proto.ReverseStatus{ID: r.ID, OK: true})
-		m.udpRelay(r, up, acl)
+		m.udpRelay(r, up, acl, relay.NewLimiter(r.MaxMbps))
 	}
 }
 
@@ -193,12 +196,20 @@ func (m *reverseMgr) openReverse(r proto.ReverseRule, udp bool) (net.Conn, error
 	return stream, nil
 }
 
-func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *config.ACL) {
+func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter, cnt *atomic.Int64) {
 	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
 		slog.Warn("反向规则白名单拒绝连接", "rule", r.Name, "ip", ap.Addr())
 		_ = visitor.Close()
 		return
 	}
+	cnt.Add(1)
+	if r.MaxConns > 0 && cnt.Load() > int64(r.MaxConns) {
+		cnt.Add(-1)
+		slog.Warn("反向规则超过连接数上限，拒绝连接", "rule", r.Name, "max", r.MaxConns)
+		_ = visitor.Close()
+		return
+	}
+	defer cnt.Add(-1)
 	defer visitor.Close()
 	stream, err := m.openReverse(r, false)
 	if err != nil {
@@ -207,11 +218,11 @@ func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *confi
 	}
 	defer stream.Close()
 
-	relay.Pipe(visitor, stream, nil, nil)
+	relay.Pipe(visitor, stream, nil, nil, lim)
 }
 
 // udpRelay 本地 visitor ⇄ 隧道 UDP 帧流（镜像 server.udpTunnelRelay，方向相反）。
-func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn, acl *config.ACL) {
+func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn, acl *config.ACL, lim *relay.Limiter) {
 	stream, err := m.openReverse(r, true)
 	if err != nil {
 		slog.Warn("反向 UDP 开流失败", "rule", r.Name, "err", err)
@@ -263,6 +274,10 @@ func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn, acl *config.
 		}
 		key := src.String()
 		v := visitors[key]
+		if v == nil && r.MaxConns > 0 && len(visitors) >= r.MaxConns {
+			mu.Unlock()
+			continue // 超过会话上限，丢弃新访客的包
+		}
 		if v == nil {
 			nextID++
 			v = &visitorEntry{id: nextID, addr: src}
@@ -280,6 +295,7 @@ func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn, acl *config.
 		}
 		mu.Unlock()
 
+		lim.Wait(n)
 		wmu.Lock()
 		err = proto.WriteUDPPacket(stream, &proto.UDPPacket{ConnID: v.id, Payload: buf[:n]})
 		wmu.Unlock()
