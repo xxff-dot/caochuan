@@ -25,7 +25,9 @@ type RuleView struct {
 	Conns      int64  `json:"conns"`
 	ConnsTotal int64  `json:"conns_total"`
 	Running    bool   `json:"running"`
-	Note       string `json:"note,omitempty"` // 反向规则：client 侧监听失败原因等
+	Note       string `json:"note,omitempty"`  // 反向规则：client 侧监听失败原因等
+	Health     string `json:"health,omitempty"` // "ok" | "fail"（仅 TCP 规则有探测结果）
+	HealthErr  string `json:"health_err,omitempty"`
 }
 
 // ClientView 客户端条目（含 token，面板要展示给用户配 client 用）。
@@ -49,6 +51,16 @@ func (s *Server) ListRules() []RuleView {
 			v.BytesOut = st.BytesOut.Load()
 			v.Conns = st.Conns.Load()
 			v.ConnsTotal = st.ConnsTotal.Load()
+		}
+		if r.Proto == "tcp" {
+			if h := s.health[r.ID]; h != nil {
+				if h.OK {
+					v.Health = "ok"
+				} else {
+					v.Health = "fail"
+					v.HealthErr = h.Err
+				}
+			}
 		}
 		if r.SideOf() == "server" {
 			_, v.Running = s.runners[r.ID]
@@ -370,6 +382,33 @@ func (s *Server) SetPassword(pw string) error {
 		return err
 	}
 	return nil
+}
+
+// ---- 异常通知 ----
+
+func (s *Server) NotifySettings() (url, format string) {
+	return s.notifier.get()
+}
+
+func (s *Server) SetNotify(url, format string) error {
+	if url != "" && format != "dingtalk" && format != "feishu" && format != "generic" {
+		return fmt.Errorf("通知格式必须是 generic、dingtalk 或 feishu")
+	}
+	s.mu.Lock()
+	oldURL, oldFmt := s.cfg.NotifyURL, s.cfg.NotifyFormat
+	s.cfg.NotifyURL, s.cfg.NotifyFormat = url, format
+	s.notifier.set(url, format)
+	err := s.cfg.Save(s.CfgPath)
+	if err != nil {
+		s.cfg.NotifyURL, s.cfg.NotifyFormat = oldURL, oldFmt
+		s.notifier.set(oldURL, oldFmt)
+	}
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Server) NotifyTest() error {
+	return s.notifier.sendNow("test", "这是一条测试通知，收到即配置成功")
 }
 
 func (s *Server) Overview() map[string]any {

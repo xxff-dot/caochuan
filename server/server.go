@@ -65,8 +65,30 @@ type Server struct {
 	runners  map[string]*runner     // ruleID → 监听
 	stats    map[string]*Stat       // ruleID → 统计
 	hist     map[string]*history    // ruleID → 流量历史采样
+	health   map[string]*healthStatus // ruleID → 目标健康状态
+	notifier *notifier
+	authFails map[string]*authFail // 隧道来源 IP → token 爆破记录
 	started  time.Time
 	stopping bool
+}
+
+// authFail 隧道 token 爆破记录（同面板登录防爆破逻辑）。
+type authFail struct {
+	count    int
+	lastFail time.Time
+	until    time.Time
+}
+
+const authMaxFails = 10
+const authBlockFor = 10 * time.Minute
+
+// sweepAuthFails 清过期记录。调用方须持有 s.mu。
+func (s *Server) sweepAuthFails(now time.Time) {
+	for ip, f := range s.authFails {
+		if now.After(f.until) && now.Sub(f.lastFail) > authBlockFor {
+			delete(s.authFails, ip)
+		}
+	}
 }
 
 func New(cfg *config.Server, cfgPath string, ring *logbuf.Ring) (*Server, error) {
@@ -74,15 +96,18 @@ func New(cfg *config.Server, cfgPath string, ring *logbuf.Ring) (*Server, error)
 	sc.KeepAliveInterval = 10 * time.Second
 	sc.KeepAliveTimeout = 30 * time.Second
 	s := &Server{
-		CfgPath: cfgPath,
-		Log:     ring,
-		smuxCfg: sc,
-		cfg:     cfg,
-		clients: map[string]*clientConn{},
-		runners: map[string]*runner{},
-		stats:   map[string]*Stat{},
-		hist:    map[string]*history{},
-		started: time.Now(),
+		CfgPath:   cfgPath,
+		Log:       ring,
+		smuxCfg:   sc,
+		cfg:       cfg,
+		clients:   map[string]*clientConn{},
+		runners:   map[string]*runner{},
+		stats:     map[string]*Stat{},
+		hist:      map[string]*history{},
+		health:    map[string]*healthStatus{},
+		notifier:  newNotifier(cfg.NotifyURL, cfg.NotifyFormat),
+		authFails: map[string]*authFail{},
+		started:   time.Now(),
 	}
 	if !cfg.NoTLS {
 		cm, err := LoadOrGenerate(cfgPath, cfg.TLSCert, cfg.TLSKey)
@@ -134,6 +159,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	go s.probeLoop(ctx) // 规则目标健康检查
+
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -173,18 +200,35 @@ func (s *Server) isStopping() bool {
 // handleTunnel 完成一次 client 接入：鉴权帧 → smux 会话。
 func (s *Server) handleTunnel(conn net.Conn) {
 	defer conn.Close()
+	remote := conn.RemoteAddr().String()
+	host, _, _ := net.SplitHostPort(remote)
+
+	// token 防爆破：锁定期内直接断开
+	s.mu.Lock()
+	s.sweepAuthFails(time.Now())
+	if f := s.authFails[host]; f != nil && time.Now().Before(f.until) {
+		s.mu.Unlock()
+		slog.Warn("隧道来源被锁定，拒绝连接", "ip", host)
+		return
+	}
+	s.mu.Unlock()
+
 	var req proto.AuthRequest
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if err := proto.ReadJSONFrame(conn, &req); err != nil {
-		slog.Warn("隧道鉴权读取失败", "remote", conn.RemoteAddr(), "err", err)
+		slog.Warn("隧道鉴权读取失败", "remote", remote, "err", err)
 		return
 	}
 	name, ok := s.authToken(req.Token)
 	if !ok {
-		slog.Warn("隧道鉴权失败（token 无效）", "remote", conn.RemoteAddr())
+		s.recordAuthFail(host)
+		slog.Warn("隧道鉴权失败（token 无效）", "remote", remote)
 		_ = proto.WriteJSONFrame(conn, proto.AuthReply{OK: false, Message: "invalid token"})
 		return
 	}
+	s.mu.Lock()
+	delete(s.authFails, host)
+	s.mu.Unlock()
 	if err := proto.WriteJSONFrame(conn, proto.AuthReply{OK: true}); err != nil {
 		return
 	}
@@ -207,6 +251,7 @@ func (s *Server) handleTunnel(conn net.Conn) {
 	s.mu.Unlock()
 	slog.Info("client 上线", "client", name, "addr", cc.Addr, "host", req.Host)
 	s.Log.Write([]byte(fmt.Sprintf("client 上线: %s (%s, 主机名 %s)\n", name, cc.Addr, req.Host)))
+	s.notifier.send("client_up|"+name, "client_up", fmt.Sprintf("客户端 %s 上线（%s）", name, cc.Addr))
 
 	go s.acceptReverse(cc) // 客户端反向规则的回源流
 	go s.setupControl(cc)  // 控制流：推送反向规则
@@ -223,6 +268,7 @@ func (s *Server) handleTunnel(conn net.Conn) {
 	s.mu.Unlock()
 	slog.Info("client 下线", "client", name)
 	s.Log.Write([]byte(fmt.Sprintf("client 下线: %s\n", name)))
+	s.notifier.send("client_down|"+name, "client_down", fmt.Sprintf("客户端 %s 下线", name))
 }
 
 func (s *Server) authToken(token string) (string, bool) {
@@ -234,6 +280,25 @@ func (s *Server) authToken(token string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// recordAuthFail 记录一次隧道鉴权失败，达到阈值锁定该来源 IP。
+func (s *Server) recordAuthFail(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authFails[host] == nil {
+		s.authFails[host] = &authFail{}
+	}
+	f := s.authFails[host]
+	f.count++
+	f.lastFail = time.Now()
+	if f.count >= authMaxFails {
+		f.until = time.Now().Add(authBlockFor)
+		f.count = 0
+		slog.Warn("隧道来源因多次鉴权失败被锁定", "ip", host, "minutes", int(authBlockFor.Minutes()))
+		s.notifier.send("auth_block|"+host, "auth_block",
+			fmt.Sprintf("隧道来源 %s 多次 token 鉴权失败，已锁定 %d 分钟", host, int(authBlockFor.Minutes())))
+	}
 }
 
 // applyRulesLocked 按当前配置 diff 启停 server 侧规则监听（Side=server）。
@@ -258,6 +323,7 @@ func (s *Server) applyRulesLocked() {
 		if rn, err := s.startRule(r); err != nil {
 			slog.Error("规则启动失败", "rule", r.Name, "err", err)
 			s.Log.Write([]byte(fmt.Sprintf("规则启动失败: %s: %v\n", r.Name, err)))
+			s.notifier.send("rule_error|"+id, "rule_error", fmt.Sprintf("规则 %s 启动失败: %v", r.Name, err))
 		} else {
 			s.runners[id] = rn
 			slog.Info("规则已启动", "rule", r.Name, "proto", r.Proto, "listen", r.Listen, "client", r.Client, "target", r.Target)

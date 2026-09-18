@@ -159,6 +159,8 @@ func (s *Server) setupControl(cc *clientConn) {
 		if !st.OK {
 			slog.Warn("client 反向监听失败", "client", cc.Name, "rule", st.ID, "err", st.Err)
 			s.Log.Write([]byte(fmt.Sprintf("client %s 反向监听失败 (规则 %s): %s\n", cc.Name, st.ID, st.Err)))
+			s.notifier.send("reverse_error|"+st.ID+"|"+cc.Name, "reverse_error",
+				fmt.Sprintf("客户端 %s 反向规则监听失败: %s", cc.Name, st.Err))
 		}
 	}
 }

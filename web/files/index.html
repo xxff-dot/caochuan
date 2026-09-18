@@ -87,6 +87,13 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
         <tbody id="clients"></tbody></table></div>
     </section>
     <section id="tab-settings" hidden>
+      <div class="card"><h3>异常通知 WebHook</h3>
+        <p class="hint">client 上/下线、规则启动失败、反向监听异常、隧道爆破锁定时 POST JSON 通知。格式支持通用 / 钉钉 / 飞书。</p>
+        <div class="row"><input id="nt-url" placeholder="https://WebHook地址" style="flex:1">
+        <select id="nt-format"><option value="generic">通用 JSON</option><option value="dingtalk">钉钉机器人</option><option value="feishu">飞书机器人</option></select></div>
+        <div class="row"><button class="pri" onclick="saveNotify()">保存</button>
+        <button onclick="testNotify()">发送测试</button><span id="nt-msg" class="hint"></span></div>
+      </div>
       <div class="card"><h3>面板 IP 白名单</h3>
         <p class="hint">每行一个 IP 或 CIDR，如 192.168.1.0/24。在线客户端的来源 IP 始终自动放行；<b>留空时仅允许本机回环访问</b>。</p>
         <textarea id="wl" rows="5" style="width:100%"></textarea>
@@ -165,8 +172,22 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   tab=b.dataset.t;
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('act',x===b));
   document.querySelectorAll('main section').forEach(s=>s.hidden=s.id!=='tab-'+tab);
-  if(tab==='settings')loadWL();
+  if(tab==='settings'){loadWL();loadNotify();}
 });
+
+/* ---- 通知设置 ---- */
+async function loadNotify(){
+  try{const n=await api('/api/notify');$('#nt-url').value=n.url;$('#nt-format').value=n.format||'generic';}catch(e){}
+}
+function saveNotify(){
+  api('/api/notify',{method:'PUT',body:JSON.stringify({url:$('#nt-url').value.trim(),format:$('#nt-format').value})})
+    .then(()=>{$('#nt-msg').textContent='已保存';setTimeout(()=>$('#nt-msg').textContent='',2000);}).catch(e=>alert(e.message));
+}
+function testNotify(){
+  $('#nt-msg').textContent='发送中…';
+  api('/api/notify/test',{method:'POST'}).then(()=>{$('#nt-msg').textContent='已发送，注意查收';})
+    .catch(e=>{$('#nt-msg').textContent=e.message;});
+}
 
 /* ---- 规则 ---- */
 async function refresh(){
@@ -199,7 +220,7 @@ async function refresh(){
         const dir=r.side==='client'?'反向（client 端口 → 服务器侧目标）'
                  :(r.client?`穿透（server 端口 → ${esc(r.client)} 内网）`:'正向（server 端口 → 任意目标）');
         html+=`<tr>
-        <td><span class="badge ${r.enabled?'on':'off'}">${r.enabled?'运行':'停止'}</span>${r.note?`<div class="note">${esc(r.note)}</div>`:''}</td>
+        <td><span class="badge ${r.enabled?'on':'off'}">${r.enabled?'运行':'停止'}</span>${r.health?` <span class="badge ${r.health==='ok'?'on':'off'}" title="${esc(r.health_err||'目标可达')}">目标${r.health==='ok'?'通':'不通'}</span>`:''}${r.note?`<div class="note">${esc(r.note)}</div>`:''}</td>
         <td>${esc(r.name)}</td><td>${r.proto.toUpperCase()}</td>
         <td class="num">${r.listen}</td><td>${dir}</td><td class="tok">${esc(r.target)}</td>
         <td class="num col-rate">${fmtR(rt[0])} / ${fmtR(rt[1])}</td>

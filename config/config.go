@@ -56,6 +56,8 @@ type Server struct {
 	TLSCert    string       `json:"tls_cert,omitempty"` // 自有证书路径；留空自动生成自签证书
 	TLSKey     string       `json:"tls_key,omitempty"`
 	LogFile    string       `json:"log_file,omitempty"` // 日志文件（空=仅输出到控制台）
+	NotifyURL    string     `json:"notify_url,omitempty"`     // WebHook 地址；client 上/下线、规则异常时 POST 通知
+	NotifyFormat string     `json:"notify_format,omitempty"`  // generic | dingtalk | feishu（默认 generic）
 	Clients    []ClientUser `json:"clients"`
 	Rules      []Rule       `json:"rules"`
 }

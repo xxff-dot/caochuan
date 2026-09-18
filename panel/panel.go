@@ -163,6 +163,25 @@ func (p *Panel) apiHandler() *http.ServeMux {
 		return p.Srv.SetPassword(req.Password)
 	}))
 
+	mux.HandleFunc("GET /api/notify", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		url, format := p.Srv.NotifySettings()
+		writeJSON(w, map[string]string{"url": url, "format": format})
+		return nil
+	}))
+	mux.HandleFunc("PUT /api/notify", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		req, err := decode[struct {
+			URL    string `json:"url"`
+			Format string `json:"format"`
+		}](r)
+		if err != nil {
+			return err
+		}
+		return p.Srv.SetNotify(req.URL, req.Format)
+	}))
+	mux.HandleFunc("POST /api/notify/test", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		return p.Srv.NotifyTest()
+	}))
+
 	mux.HandleFunc("GET /api/logs", p.auth(func(w http.ResponseWriter, r *http.Request) error {
 		n, _ := strconv.Atoi(r.URL.Query().Get("n"))
 		writeJSON(w, map[string]any{"lines": p.Srv.Log.Tail(n)})
