@@ -4,10 +4,15 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,9 +62,44 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
+// dialServer 建立到 server 的底层连接（TLS 或明文）。
+func (c *Client) dialServer() (net.Conn, error) {
+	raw, err := net.DialTimeout("tcp", c.Cfg.ServerAddr, dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if c.Cfg.NoTLS {
+		return raw, nil
+	}
+	host, _, _ := net.SplitHostPort(c.Cfg.ServerAddr)
+	tc := tls.Client(raw, &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: true, // 证书链不校验；用指纹锁定代替（自签证书无公共信任链）
+	})
+	if err := tc.HandshakeContext(context.Background()); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("TLS 握手失败: %w", err)
+	}
+	// 指纹锁定：配置了 tls_fingerprint 时严格比对服务器证书
+	if want := c.Cfg.TLSFingerprint; want != "" {
+		certs := tc.ConnectionState().PeerCertificates
+		if len(certs) == 0 {
+			_ = raw.Close()
+			return nil, fmt.Errorf("服务器未提供证书")
+		}
+		sum := sha256.Sum256(certs[0].Raw)
+		got := hex.EncodeToString(sum[:])
+		if subtle.ConstantTimeCompare([]byte(got), []byte(strings.ToLower(want))) != 1 {
+			_ = raw.Close()
+			return nil, fmt.Errorf("服务器证书指纹不匹配（期望 %s，实际 %s），拒绝连接", want, got)
+		}
+	}
+	return tc, nil
+}
+
 // serveOnce 建立一次完整会话，阻塞到会话结束。
 func (c *Client) serveOnce(ctx context.Context) error {
-	conn, err := net.DialTimeout("tcp", c.Cfg.ServerAddr, dialTimeout)
+	conn, err := c.dialServer()
 	if err != nil {
 		return fmt.Errorf("拨号失败: %w", err)
 	}
@@ -91,8 +131,12 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	rev := newReverseMgr()
 	rev.session = sess
 
-	slog.Info("已连接服务器", "addr", c.Cfg.ServerAddr)
-	c.Log.Write([]byte(fmt.Sprintf("已连接服务器: %s\n", c.Cfg.ServerAddr)))
+	mode := "TLS 加密"
+	if c.Cfg.NoTLS {
+		mode = "明文"
+	}
+	slog.Info("已连接服务器", "addr", c.Cfg.ServerAddr, "加密", mode)
+	c.Log.Write([]byte(fmt.Sprintf("已连接服务器: %s (%s)\n", c.Cfg.ServerAddr, mode)))
 
 	gone := make(chan struct{}) // 会话结束时唤醒 ctx 监听 goroutine，避免泄漏
 	defer close(gone)

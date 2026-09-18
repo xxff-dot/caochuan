@@ -48,14 +48,19 @@ type Server struct {
 	PanelPrefix string      `json:"panel_prefix"` // 面板随机路径前缀，防扫描爆破；留空则启动时自动生成
 	IPWhitelist []string    `json:"ip_whitelist"` // 手动 CIDR/IP 白名单；client 来源 IP 自动放行
 	Secret     string       `json:"secret"`       // 会话签名密钥，自动生成
+	NoTLS      bool         `json:"no_tls,omitempty"` // 关闭隧道 TLS（明文，不推荐）
+	TLSCert    string       `json:"tls_cert,omitempty"` // 自有证书路径；留空自动生成自签证书
+	TLSKey     string       `json:"tls_key,omitempty"`
 	Clients    []ClientUser `json:"clients"`
 	Rules      []Rule       `json:"rules"`
 }
 
-// ClientConfig 内网机侧配置：只需 server 地址和 token。
+// ClientConfig 内网机侧配置：server 地址 + token + TLS 选项。
 type ClientConfig struct {
-	ServerAddr string `json:"server_addr"`
-	Token      string `json:"token"`
+	ServerAddr     string `json:"server_addr"`
+	Token          string `json:"token"`
+	NoTLS          bool   `json:"no_tls,omitempty"`          // 与 server 端 no_tls 保持一致
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"` // 服务器证书 SHA-256 指纹（推荐填写防中间人）
 }
 
 func RandToken() string {

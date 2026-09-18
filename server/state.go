@@ -376,13 +376,15 @@ func (s *Server) Overview() map[string]any {
 		}
 	}
 	return map[string]any{
-		"started":        s.started.Format(time.DateTime),
-		"uptime":         time.Since(s.started).Round(time.Second).String(),
-		"tunnel_addr":    s.cfg.TunnelAddr,
-		"panel_addr":     s.cfg.PanelAddr,
-		"clients":        len(s.cfg.Clients),
-		"clients_online": online,
-		"rules":          len(s.cfg.Rules),
-		"no_auth":        s.cfg.NoAuth,
+		"started":         s.started.Format(time.DateTime),
+		"uptime":          time.Since(s.started).Round(time.Second).String(),
+		"tunnel_addr":     s.cfg.TunnelAddr,
+		"panel_addr":      s.cfg.PanelAddr,
+		"clients":         len(s.cfg.Clients),
+		"clients_online":  online,
+		"rules":           len(s.cfg.Rules),
+		"no_auth":         s.cfg.NoAuth,
+		"tls":             !s.cfg.NoTLS,
+		"tls_fingerprint": s.TlsFingerprint(),
 	}
 }

@@ -2,8 +2,13 @@
   "tunnel_addr": "0.0.0.0:7000",
   "panel_addr": "0.0.0.0:7500",
   "password": "改成你的面板密码",
+  "no_auth": false,
+  "panel_prefix": "",
   "ip_whitelist": [],
   "secret": "",
+  "no_tls": false,
+  "tls_cert": "",
+  "tls_key": "",
   "clients": [
     {"name": "client1", "token": "改成随机token，或删掉此项后在面板里添加"}
   ],

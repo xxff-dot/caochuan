@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -56,6 +57,7 @@ type Server struct {
 	Log     *logbuf.Ring
 
 	smuxCfg *smux.Config
+	certs   *CertManager
 
 	mu       sync.Mutex
 	cfg      *config.Server
@@ -70,7 +72,7 @@ func New(cfg *config.Server, cfgPath string, ring *logbuf.Ring) (*Server, error)
 	sc := smux.DefaultConfig()
 	sc.KeepAliveInterval = 10 * time.Second
 	sc.KeepAliveTimeout = 30 * time.Second
-	return &Server{
+	s := &Server{
 		CfgPath: cfgPath,
 		Log:     ring,
 		smuxCfg: sc,
@@ -79,7 +81,23 @@ func New(cfg *config.Server, cfgPath string, ring *logbuf.Ring) (*Server, error)
 		runners: map[string]*runner{},
 		stats:   map[string]*Stat{},
 		started: time.Now(),
-	}, nil
+	}
+	if !cfg.NoTLS {
+		cm, err := LoadOrGenerate(cfgPath, cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return nil, err
+		}
+		s.certs = cm
+	}
+	return s, nil
+}
+
+// TlsFingerprint 当前隧道证书指纹（未启用 TLS 为空）。
+func (s *Server) TlsFingerprint() string {
+	if s.certs == nil {
+		return ""
+	}
+	return s.certs.Fingerprint()
 }
 
 // Run 启动隧道监听与全部规则，阻塞直到 ctx 取消。
@@ -88,7 +106,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("隧道端口监听失败: %w", err)
 	}
-	slog.Info("隧道端点已启动", "addr", s.cfg.TunnelAddr)
+	if s.certs != nil {
+		ln = tls.NewListener(ln, s.certs.TLSConfig())
+		slog.Info("隧道端点已启动", "addr", s.cfg.TunnelAddr, "加密", "TLS",
+			"证书指纹", s.certs.Fingerprint())
+		s.Log.Write([]byte(fmt.Sprintf("隧道 TLS 已启用, 证书指纹: %s\n", s.certs.Fingerprint())))
+	} else {
+		slog.Info("隧道端点已启动", "addr", s.cfg.TunnelAddr, "加密", "无（明文）")
+	}
 
 	s.mu.Lock()
 	s.applyRulesLocked()

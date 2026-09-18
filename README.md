@@ -83,9 +83,9 @@ caochuan service remove|start|stop
 
 ## 安全提示
 
-- 隧道使用 token 鉴权但**不加密**（明文传输），对安全性有要求的公网链路请自行套 TLS 或使用加密隧道
+- 隧道默认 **TLS 加密**（自动生成自签证书），client 配置 `tls_fingerprint`（见服务器启动日志）可防中间人；两端设 `no_tls: true` 可关闭
 - 面板密码登录有防爆破锁定（5 次失败锁 10 分钟）；白名单留空时仅本机（回环 + 本机网卡地址）与在线客户端来源 IP 可访问
-- 配置文件中的密码与 token 为明文，请保证文件权限（Windows 服务默认以 LocalSystem 运行）
+- 配置文件中的密码、token、secret 与 server.key 为敏感明文，请保证文件权限（Windows 服务默认以 LocalSystem 运行）
 
 ## 文档
 
