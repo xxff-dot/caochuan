@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 )
@@ -15,14 +16,15 @@ import (
 // Side 为 "client"：反向 —— 该 client 监听 Listen 端口，访问流量经隧道由 server 拨 Target
 //                   （Target 从服务器视角解析，可以是服务器本身或其内网）。
 type Rule struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Side    string `json:"side,omitempty"` // "server"(默认) | "client"
-	Proto   string `json:"proto"`          // "tcp" | "udp"
-	Listen  int    `json:"listen"`
-	Client  string `json:"client"`
-	Target  string `json:"target"`
-	Enabled bool   `json:"enabled"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Side      string   `json:"side,omitempty"`       // "server"(默认) | "client"
+	Proto     string   `json:"proto"`                // "tcp" | "udp"
+	Listen    int      `json:"listen"`
+	Client    string   `json:"client"`
+	Target    string   `json:"target"`
+	AllowFrom []string `json:"allow_from,omitempty"` // 来源白名单（IP/CIDR），空=不限制
+	Enabled   bool     `json:"enabled"`
 }
 
 // SideOf 归一化 side 值。
@@ -51,8 +53,54 @@ type Server struct {
 	NoTLS      bool         `json:"no_tls,omitempty"` // 关闭隧道 TLS（明文，不推荐）
 	TLSCert    string       `json:"tls_cert,omitempty"` // 自有证书路径；留空自动生成自签证书
 	TLSKey     string       `json:"tls_key,omitempty"`
+	LogFile    string       `json:"log_file,omitempty"` // 日志文件（空=仅输出到控制台）
 	Clients    []ClientUser `json:"clients"`
 	Rules      []Rule       `json:"rules"`
+}
+
+// ACL 来源白名单：nil = 不限制。
+type ACL struct {
+	prefixes []netip.Prefix
+	addrs    []netip.Addr
+}
+
+// NewACL 解析 IP/CIDR 列表；空列表返回 nil（不限制）。
+func NewACL(entries []string) (*ACL, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	a := &ACL{}
+	for _, e := range entries {
+		if p, err := netip.ParsePrefix(e); err == nil {
+			a.prefixes = append(a.prefixes, p)
+			continue
+		}
+		addr, err := netip.ParseAddr(e)
+		if err != nil {
+			return nil, err
+		}
+		a.addrs = append(a.addrs, addr.Unmap())
+	}
+	return a, nil
+}
+
+// Allows 判定访客 IP 是否放行。
+func (a *ACL) Allows(ip netip.Addr) bool {
+	if a == nil {
+		return true
+	}
+	ip = ip.Unmap()
+	for _, p := range a.prefixes {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	for _, addr := range a.addrs {
+		if addr == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // ClientConfig 内网机侧配置：server 地址 + token + TLS 选项。
@@ -61,6 +109,7 @@ type ClientConfig struct {
 	Token          string `json:"token"`
 	NoTLS          bool   `json:"no_tls,omitempty"`          // 与 server 端 no_tls 保持一致
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"` // 服务器证书 SHA-256 指纹（推荐填写防中间人）
+	LogFile        string `json:"log_file,omitempty"`        // 日志文件（空=仅输出到控制台）
 }
 
 func RandToken() string {

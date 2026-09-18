@@ -5,14 +5,22 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/xtaci/smux"
 
+	"github.com/xxff-dot/caochuan/config"
 	"github.com/xxff-dot/caochuan/proto"
 	"github.com/xxff-dot/caochuan/relay"
 )
+
+// udpIP 取 UDP 源地址的 netip.Addr。
+func udpIP(a *net.UDPAddr) netip.Addr {
+	ip, _ := netip.AddrFromSlice(a.IP)
+	return ip.Unmap()
+}
 
 // visitorEntry 反向 UDP 的访客表项（地址 ↔ connID）。
 type visitorEntry struct {
@@ -123,6 +131,10 @@ func (m *reverseMgr) stopAll() {
 }
 
 func (m *reverseMgr) start(r proto.ReverseRule) {
+	acl, err := config.NewACL(r.AllowFrom)
+	if err != nil {
+		slog.Error("反向规则白名单无效，按不限制处理", "rule", r.Name, "err", err)
+	}
 	switch r.Proto {
 	case "tcp":
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", r.Listen))
@@ -142,7 +154,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 			if err != nil {
 				return // 关闭/会话断开
 			}
-			go m.handleTCP(r, conn)
+			go m.handleTCP(r, conn, acl)
 		}
 	case "udp":
 		up, err := net.ListenUDP("udp", &net.UDPAddr{Port: r.Listen})
@@ -157,7 +169,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 		m.udpConns[r.ID] = up
 		m.mu.Unlock()
 		m.report(proto.ReverseStatus{ID: r.ID, OK: true})
-		m.udpRelay(r, up)
+		m.udpRelay(r, up, acl)
 	}
 }
 
@@ -181,7 +193,12 @@ func (m *reverseMgr) openReverse(r proto.ReverseRule, udp bool) (net.Conn, error
 	return stream, nil
 }
 
-func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn) {
+func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *config.ACL) {
+	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
+		slog.Warn("反向规则白名单拒绝连接", "rule", r.Name, "ip", ap.Addr())
+		_ = visitor.Close()
+		return
+	}
 	defer visitor.Close()
 	stream, err := m.openReverse(r, false)
 	if err != nil {
@@ -194,7 +211,7 @@ func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn) {
 }
 
 // udpRelay 本地 visitor ⇄ 隧道 UDP 帧流（镜像 server.udpTunnelRelay，方向相反）。
-func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn) {
+func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn, acl *config.ACL) {
 	stream, err := m.openReverse(r, true)
 	if err != nil {
 		slog.Warn("反向 UDP 开流失败", "rule", r.Name, "err", err)
@@ -240,6 +257,10 @@ func (m *reverseMgr) udpRelay(r proto.ReverseRule, up *net.UDPConn) {
 			return
 		}
 		mu.Lock()
+		if !acl.Allows(udpIP(src)) {
+			mu.Unlock()
+			continue
+		}
 		key := src.String()
 		v := visitors[key]
 		if v == nil {

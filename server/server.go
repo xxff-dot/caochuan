@@ -64,6 +64,7 @@ type Server struct {
 	clients  map[string]*clientConn // name → 在线 client
 	runners  map[string]*runner     // ruleID → 监听
 	stats    map[string]*Stat       // ruleID → 统计
+	hist     map[string]*history    // ruleID → 流量历史采样
 	started  time.Time
 	stopping bool
 }
@@ -80,6 +81,7 @@ func New(cfg *config.Server, cfgPath string, ring *logbuf.Ring) (*Server, error)
 		clients: map[string]*clientConn{},
 		runners: map[string]*runner{},
 		stats:   map[string]*Stat{},
+		hist:    map[string]*history{},
 		started: time.Now(),
 	}
 	if !cfg.NoTLS {
@@ -118,6 +120,19 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mu.Lock()
 	s.applyRulesLocked()
 	s.mu.Unlock()
+
+	go func() { // 流量历史采样
+		t := time.NewTicker(histInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.sampleHistory()
+			}
+		}
+	}()
 
 	go func() {
 		for {

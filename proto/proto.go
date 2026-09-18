@@ -45,11 +45,12 @@ const ControlID = "__control__"
 
 // ReverseRule 下发给 client 的反向监听条目（Side=client 的规则）。
 type ReverseRule struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Proto  string `json:"proto"`
-	Listen int    `json:"listen"`
-	Target string `json:"target"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Proto     string   `json:"proto"`
+	Listen    int      `json:"listen"`
+	Target    string   `json:"target"`
+	AllowFrom []string `json:"allow_from,omitempty"`
 }
 
 // RulePush 控制流 server→client 帧。

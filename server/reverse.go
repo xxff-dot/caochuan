@@ -169,7 +169,8 @@ func (s *Server) pushRulesTo(cc *clientConn) {
 	var rules []proto.ReverseRule
 	for _, r := range s.cfg.Rules {
 		if r.SideOf() == "client" && r.Client == cc.Name && r.Enabled {
-			rules = append(rules, proto.ReverseRule{ID: r.ID, Name: r.Name, Proto: r.Proto, Listen: r.Listen, Target: r.Target})
+			rules = append(rules, proto.ReverseRule{ID: r.ID, Name: r.Name, Proto: r.Proto,
+				Listen: r.Listen, Target: r.Target, AllowFrom: r.AllowFrom})
 		}
 	}
 	cs := cc.cs

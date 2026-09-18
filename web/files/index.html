@@ -107,7 +107,14 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
   <label id="f-listen-label">监听端口（在服务器上开放）</label><input id="f-listen" type="number" min="1" max="65535">
   <label>方向</label><select id="f-client"></select>
   <label>目标地址（正向/反向以服务器视角解析；穿透以客户端视角解析）</label><input id="f-target" placeholder="127.0.0.1:80">
+  <label>来源白名单（每行一个 IP/CIDR，留空=不限制）</label><textarea id="f-allow" rows="2" placeholder="192.168.1.0/24"></textarea>
   <div class="acts"><button onclick="dlgRule.close()">取消</button><button class="pri" onclick="saveRule()">保存</button></div>
+</dialog>
+
+<dialog id="dlgChart" style="width:760px"><h3 id="chartTitle">流量图表</h3>
+  <canvas id="chart" width="720" height="300" style="width:100%"></canvas>
+  <p class="hint"><span style="color:var(--ok)">▼ 下载（目标→访客）</span>　<span style="color:var(--acc)">▲ 上传（访客→目标）</span>　30 秒采样，保留 24 小时</p>
+  <div class="acts"><button onclick="dlgChart.close()">关闭</button></div>
 </dialog>
 
 <dialog id="dlgClient"><h3>添加客户端</h3>
@@ -195,6 +202,7 @@ async function refresh(){
         <td class="num col-total">${fmtB(r.bytes_in)} / ${fmtB(r.bytes_out)}</td>
         <td class="num">${r.conns}</td>
         <td style="white-space:nowrap">
+          <button class="mini" onclick="showChart('${r.id}','${esc(r.name)}')">图表</button>
           <button class="mini" onclick="editRule('${r.id}')">编辑</button>
           <button class="mini" onclick="toggleRule('${r.id}',${!r.enabled})">${r.enabled?'停用':'启用'}</button>
           <button class="mini danger" onclick="delRule('${r.id}','${esc(r.name)}')">删除</button></td></tr>`;
@@ -218,10 +226,10 @@ function copyTok(btn,tok){navigator.clipboard.writeText(tok);btn.textContent='�
 function openRule(id){
   editingId=id||null;
   $('#dlgRuleTitle').textContent=id?'编辑规则':'新建规则';
-  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';
+  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';$('#f-allow').value='';
   if(id){api('/api/rules').then(rl=>{const x=rl.find(v=>v.id===id);if(!x)return;
       $('#f-name').value=x.name;$('#f-proto').value=x.proto;$('#f-listen').value=x.listen;
-      $('#f-target').value=x.target;
+      $('#f-target').value=x.target;$('#f-allow').value=(x.allow_from||[]).join('\n');
       $('#f-client').value=(x.side==='client'?'c:':'s:')+(x.client||'');syncListenLabel();});}
   else {$('#f-client').value='s:';syncListenLabel();}
   dlgRule.showModal();
@@ -233,11 +241,52 @@ function syncListenLabel(){
   $('#f-listen-label').textContent=side==='c'?'监听端口（在客户端本机开放）':'监听端口（在服务器上开放）';
 }
 $('#f-client').addEventListener('change',syncListenLabel);
+
+/* ---- 流量图表 ---- */
+async function showChart(id,name){
+  $('#chartTitle').textContent='流量图表 — '+name;
+  dlgChart.showModal();
+  try{
+    const {points}=await api('/api/history/'+id);
+    drawChart(points||[]);
+  }catch(e){$('#chartTitle').textContent='流量图表 — '+name+'（'+e.message+'）';}
+}
+function drawChart(pts){
+  const cv=$('#chart'),ctx=cv.getContext('2d'),W=cv.width,H=cv.height,px=44,py=24;
+  ctx.clearRect(0,0,W,H);
+  if(pts.length<2){ctx.fillStyle='#7c8b9c';ctx.fillText('采样点不足（每 30 秒采集一次，稍后再看）',px,H/2);return;}
+  // 相邻点差值 → 每秒速率
+  const rIn=[],rOut=[];
+  for(let i=1;i<pts.length;i++){
+    const dt=Math.max(1,pts[i].t-pts[i-1].t);
+    rIn.push(Math.max(0,(pts[i].in-pts[i-1].in)/dt));
+    rOut.push(Math.max(0,(pts[i].out-pts[i-1].out)/dt));
+  }
+  const max=Math.max(...rIn,...rOut,1024)*1.15;
+  const X=i=>px+(W-px-12)*i/(rIn.length-1), Y=v=>H-py-(H-2*py)*v/max;
+  // 网格与刻度
+  ctx.strokeStyle='#263444';ctx.fillStyle='#7c8b9c';ctx.font='11px system-ui';
+  for(let g=0;g<=4;g++){
+    const v=max*g/4,y=Y(v);
+    ctx.beginPath();ctx.moveTo(px,y);ctx.lineTo(W-12,y);ctx.stroke();
+    ctx.fillText(fmtB(v)+'/s',2,y+4);
+  }
+  const t0=pts[1].t,t1=pts[pts.length-1].t;
+  ctx.fillText(new Date(t0*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}),px,H-6);
+  ctx.fillText(new Date(t1*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}),W-92,H-6);
+  const line=(arr,color)=>{
+    ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
+    arr.forEach((v,i)=>i?ctx.lineTo(X(i),Y(v)):ctx.moveTo(X(0),Y(v)));
+    ctx.stroke();ctx.lineWidth=1;
+  };
+  line(rOut,'#4da3ff');line(rIn,'#3fb96f');
+}
 function saveRule(){
   const [dir,client]=($('#f-client').value||'s:').split(':');
   const body={name:$('#f-name').value.trim(),proto:$('#f-proto').value,
     side:dir==='c'?'client':'server',client:client,
-    listen:+$('#f-listen').value||0,target:$('#f-target').value.trim()};
+    listen:+$('#f-listen').value||0,target:$('#f-target').value.trim(),
+    allow_from:$('#f-allow').value.split('\n').map(s=>s.trim()).filter(Boolean)};
   const p=editingId?api('/api/rules/'+editingId,{method:'PUT',body:JSON.stringify(body)})
                    :api('/api/rules',{method:'POST',body:JSON.stringify(body)});
   p.then(()=>{dlgRule.close();refresh();}).catch(e=>alert(e.message));

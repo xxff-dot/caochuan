@@ -12,9 +12,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	stdlog "log"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,7 +28,6 @@ func main() {
 		os.Exit(2)
 	}
 	ring := logbuf.New(1000)
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, ring), nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

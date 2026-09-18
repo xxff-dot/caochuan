@@ -83,6 +83,9 @@ func validateRule(r *config.Rule, clients []config.ClientUser) error {
 	if r.SideOf() == "client" && r.Client == "" {
 		return fmt.Errorf("反向规则必须指定客户端")
 	}
+	if _, err := config.NewACL(r.AllowFrom); err != nil {
+		return fmt.Errorf("来源白名单无效: %w", err)
+	}
 	if r.Client != "" { // 穿透/反向规则必须指向已登记的客户端
 		found := false
 		for _, c := range clients {

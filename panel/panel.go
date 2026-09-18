@@ -97,6 +97,10 @@ func (p *Panel) apiHandler() *http.ServeMux {
 		writeJSON(w, p.Srv.ListRules())
 		return nil
 	}))
+	mux.HandleFunc("GET /api/history/{id}", p.auth(func(w http.ResponseWriter, r *http.Request) error {
+		writeJSON(w, map[string]any{"points": p.Srv.GetHistory(r.PathValue("id"))})
+		return nil
+	}))
 	mux.HandleFunc("POST /api/rules", p.auth(func(w http.ResponseWriter, r *http.Request) error {
 		req, err := decode[config.Rule](r)
 		if err != nil {

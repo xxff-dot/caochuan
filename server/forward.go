@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -14,19 +15,34 @@ import (
 
 const udpIdle = 90 * time.Second // UDP 会话空闲超时
 
+// udpIP 取 UDP 源地址的 netip.Addr。
+func udpIP(a *net.UDPAddr) netip.Addr {
+	ip, _ := netip.AddrFromSlice(a.IP)
+	return ip.Unmap()
+}
+
 // ---- TCP ----
 
 func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
+	acl, err := config.NewACL(rule.AllowFrom)
+	if err != nil {
+		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return // 监听已关闭
 		}
-		go s.handleTCP(rule, conn)
+		go s.handleTCP(rule, conn, acl)
 	}
 }
 
-func (s *Server) handleTCP(rule config.Rule, visitor net.Conn) {
+func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL) {
+	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
+		slog.Warn("规则白名单拒绝连接", "rule", rule.Name, "ip", ap.Addr())
+		_ = visitor.Close()
+		return
+	}
 	st := s.statFor(rule.ID)
 	st.ConnsTotal.Add(1)
 	st.Conns.Add(1)
@@ -60,11 +76,33 @@ func (s *Server) handleTCP(rule config.Rule, visitor net.Conn) {
 
 func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan struct{}) {
 	st := s.statFor(rule.ID)
+	acl, err := config.NewACL(rule.AllowFrom)
+	if err != nil {
+		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
 	tgt, err := net.ResolveUDPAddr("udp", rule.Target)
 	if err != nil {
 		slog.Error("UDP 目标解析失败", "rule", rule.Name, "err", err)
 		return
 	}
+	// 目标为域名时每 60s 重新解析，跟随 DNS 变化
+	var tgtMu sync.Mutex
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if na, err := net.ResolveUDPAddr("udp", rule.Target); err == nil {
+					tgtMu.Lock()
+					tgt = na
+					tgtMu.Unlock()
+				}
+			}
+		}
+	}()
 	var mu sync.Mutex
 	backends := map[string]*net.UDPConn{} // visitor 地址 → 后端 socket
 
@@ -74,7 +112,10 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		if b, ok := backends[visitor.String()]; ok {
 			return b
 		}
-		b, err := net.DialUDP("udp", nil, tgt)
+		tgtMu.Lock()
+		cur := tgt
+		tgtMu.Unlock()
+		b, err := net.DialUDP("udp", nil, cur)
 		if err != nil {
 			return nil
 		}
@@ -117,6 +158,9 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		if err != nil {
 			return
 		}
+		if !acl.Allows(udpIP(src)) {
+			continue
+		}
 		if b := getBackend(src); b != nil {
 			if _, err := b.Write(buf[:n]); err == nil {
 				st.BytesIn.Add(int64(n))
@@ -135,6 +179,10 @@ type visitorEntry struct {
 
 func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan struct{}) {
 	st := s.statFor(rule.ID)
+	acl, err := config.NewACL(rule.AllowFrom)
+	if err != nil {
+		slog.Error("规则白名单无效，按不限制处理", "rule", rule.Name, "err", err)
+	}
 	var mu sync.Mutex
 	var stream net.Conn // 当前隧道流；断线后由下一个包触发重开
 	visitors := map[string]*visitorEntry{}
@@ -202,6 +250,10 @@ func (s *Server) udpTunnelRelay(rule config.Rule, up *net.UDPConn, done <-chan s
 			return
 		}
 		mu.Lock()
+		if !acl.Allows(udpIP(src)) {
+			mu.Unlock()
+			continue
+		}
 		key := src.String()
 		v := visitors[key]
 		if v == nil {

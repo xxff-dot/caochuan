@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,16 @@ import (
 	"github.com/xxff-dot/caochuan/server"
 	"github.com/xxff-dot/caochuan/web"
 )
+
+// setupLogger 按配置初始化默认日志：stdout + 面板环形缓冲（+ 可选轮转日志文件）。
+// 必须在配置加载后调用；Windows 服务模式下 stdout 无处输出，文件是唯一可见日志。
+func setupLogger(ring *logbuf.Ring, logFile string) {
+	writers := []io.Writer{os.Stdout, ring}
+	if logFile != "" {
+		writers = append(writers, logbuf.NewRotator(logFile, 10, 3))
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(writers...), nil)))
+}
 
 func runServer(ctx context.Context, args []string, ring *logbuf.Ring) error {
 	fs_ := flag.NewFlagSet("server", flag.ExitOnError)
@@ -39,6 +50,7 @@ func runServer(ctx context.Context, args []string, ring *logbuf.Ring) error {
 			return err
 		}
 	}
+	setupLogger(ring, cfg.LogFile)
 
 	srv, err := server.New(cfg, *cfgPath, ring)
 	if err != nil {
@@ -75,6 +87,7 @@ func runClient(ctx context.Context, args []string, ring *logbuf.Ring) error {
 		return fmt.Errorf("读取配置失败: %w", err)
 	}
 	c := &client.Client{Cfg: cfg, Log: ring}
+	setupLogger(ring, cfg.LogFile)
 	slog.Info("客户端启动", "server", cfg.ServerAddr)
 	return c.Run(ctx)
 }
