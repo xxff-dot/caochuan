@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xxff-dot/caochuan/config"
+	"github.com/xxff-dot/caochuan/relay"
 )
 
 var (
@@ -104,6 +105,20 @@ func validateRule(r *config.Rule, clients []config.ClientUser) error {
 	}
 	if r.IdleMin < 0 || r.IdleMin > 24*60 {
 		return fmt.Errorf("空闲超时须在 0-1440 分钟之间")
+	}
+	if r.ProxyProto < 0 || r.ProxyProto > 2 {
+		return fmt.Errorf("proxy_proto 只能是 0、1 或 2")
+	}
+	if r.ProxyProto > 0 && r.Proto != "tcp" {
+		return fmt.Errorf("PROXY protocol 仅支持 TCP 规则")
+	}
+	for _, t := range relay.ParseTargets(r.Target) {
+		if _, _, err := net.SplitHostPort(t); err != nil {
+			return fmt.Errorf("无效目标地址 %q（多目标用英文逗号分隔）", t)
+		}
+	}
+	if n := len(relay.ParseTargets(r.Target)); n > 16 {
+		return fmt.Errorf("目标最多 16 个")
 	}
 	if r.Client != "" { // 穿透/反向规则必须指向已登记的客户端
 		found := false

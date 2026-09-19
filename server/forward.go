@@ -2,10 +2,12 @@ package server
 
 import (
 	"bufio"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xxff-dot/caochuan/config"
@@ -58,6 +60,7 @@ func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
 		bl = nil
 	}
 	lim := relay.NewLimiter(rule.MaxMbps)
+	var rr atomic.Uint64 // 多目标轮询计数
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -76,11 +79,45 @@ func (s *Server) acceptTCP(rule config.Rule, ln net.Listener) {
 			_ = conn.Close()
 			continue
 		}
-		go s.handleTCP(rule, conn, acl, lim)
+		go s.handleTCP(rule, conn, acl, lim, &rr)
 	}
 }
 
-func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter) {
+// dialBalanced 轮询拨号多目标，失败自动尝试下一个。
+func dialBalanced(target string, rr *atomic.Uint64, timeout time.Duration) (net.Conn, error) {
+	targets := relay.ParseTargets(target)
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("目标地址为空")
+	}
+	start := int(rr.Add(1) - 1)
+	var lastErr error
+	for i := 0; i < len(targets); i++ {
+		t := targets[(start+i)%len(targets)]
+		c, err := net.DialTimeout("tcp", t, timeout)
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+		slog.Warn("目标拨号失败，尝试下一个", "target", t, "err", err)
+	}
+	return nil, lastErr
+}
+
+// proxyHeaderFor 从访客连接构造 PROXY protocol 头。
+func proxyHeaderFor(version int, visitor net.Conn) []byte {
+	src, ok1 := visitor.RemoteAddr().(*net.TCPAddr)
+	dst, ok2 := visitor.LocalAddr().(*net.TCPAddr)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	b, err := relay.ProxyHeader(version, src, dst)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter, rr *atomic.Uint64) {
 	st := s.statFor(rule.ID)
 	st.Conns.Add(1)
 	if rule.MaxConns > 0 && st.Conns.Load() > int64(rule.MaxConns) {
@@ -93,16 +130,31 @@ func (s *Server) handleTCP(rule config.Rule, visitor net.Conn, acl *config.ACL, 
 	defer st.Conns.Add(-1)
 
 	var backend net.Conn
-	if rule.Client == "" { // 正向转发：server 直接拨目标
-		c, err := net.DialTimeout("tcp", rule.Target, 5*time.Second)
+	if rule.Client == "" { // 正向转发：server 直接拨目标（多目标轮询+故障转移）
+		c, err := dialBalanced(rule.Target, rr, 5*time.Second)
 		if err != nil {
 			slog.Warn("正向转发拨号失败", "rule", rule.Name, "target", rule.Target, "err", err)
 			_ = visitor.Close()
 			return
 		}
 		backend = c
-	} else { // 穿透：让 client 拨它内网的目标
-		stream, err := s.openStreamTo(rule.Client, proto.StreamHeader{ID: rule.ID, Target: rule.Target})
+		if rule.ProxyProto > 0 { // 向目标写 PROXY 头传递真实访客 IP
+			if hdr := proxyHeaderFor(rule.ProxyProto, visitor); hdr != nil {
+				if _, err := backend.Write(hdr); err != nil {
+					_ = backend.Close()
+					_ = visitor.Close()
+					return
+				}
+			}
+		}
+	} else { // 穿透：让 client 拨它内网的目标（流头携带访客地址与代理协议版本）
+		hdr := proto.StreamHeader{ID: rule.ID, Target: rule.Target}
+		if rule.ProxyProto > 0 {
+			hdr.ProxyProto = rule.ProxyProto
+			hdr.Visitor = visitor.RemoteAddr().String()
+			hdr.DstAddr = visitor.LocalAddr().String()
+		}
+		stream, err := s.openStreamTo(rule.Client, hdr)
 		if err != nil {
 			slog.Warn("穿透拨号失败", "rule", rule.Name, "client", rule.Client, "err", err)
 			_ = visitor.Close()
@@ -132,31 +184,9 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		slog.Error("隧道黑名单配置无效，按无黑名单处理", "err", berr)
 		bl = nil
 	}
-	tgt, err := net.ResolveUDPAddr("udp", rule.Target)
-	if err != nil {
-		slog.Error("UDP 目标解析失败", "rule", rule.Name, "err", err)
-		return
-	}
-	// 目标为域名时每 60s 重新解析，跟随 DNS 变化
-	var tgtMu sync.Mutex
-	go func() {
-		t := time.NewTicker(60 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				if na, err := net.ResolveUDPAddr("udp", rule.Target); err == nil {
-					tgtMu.Lock()
-					tgt = na
-					tgtMu.Unlock()
-				}
-			}
-		}
-	}()
 	var mu sync.Mutex
 	lim := relay.NewLimiter(rule.MaxMbps)
+	var rr atomic.Uint64
 	backends := map[string]*net.UDPConn{} // visitor 地址 → 后端 socket
 
 	getBackend := func(visitor *net.UDPAddr) *net.UDPConn {
@@ -165,10 +195,8 @@ func (s *Server) udpLocalRelay(rule config.Rule, up *net.UDPConn, done <-chan st
 		if b, ok := backends[visitor.String()]; ok {
 			return b
 		}
-		tgtMu.Lock()
-		cur := tgt
-		tgtMu.Unlock()
-		b, err := net.DialUDP("udp", nil, cur)
+		// 每个新访客会话轮询拨一个目标（重新解析，多目标故障转移 + DNS 跟随）
+		b, err := relay.DialUDPBalanced(rule.Target, &rr)
 		if err != nil {
 			return nil
 		}

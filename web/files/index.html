@@ -124,7 +124,9 @@ tr.grp td{background:#141e29;color:var(--acc);font-weight:600;font-size:12px;let
   <label>协议</label><select id="f-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
   <label id="f-listen-label">监听端口（在服务器上开放）</label><input id="f-listen" type="number" min="1" max="65535">
   <label>方向</label><select id="f-client"></select>
-  <label>目标地址（正向/反向以服务器视角解析；穿透以客户端视角解析）</label><input id="f-target" placeholder="127.0.0.1:80">
+  <label>目标地址（正向/反向以服务器视角解析；穿透以客户端视角解析；多个用英文逗号分隔即负载均衡）</label><input id="f-target" placeholder="127.0.0.1:80 或 10.0.0.2:80,10.0.0.3:80">
+  <label>PROXY protocol（向目标传递真实访客 IP，目标服务需支持解析，仅 TCP）</label>
+  <select id="f-pp"><option value="0">关闭</option><option value="1">PROXY v1（文本）</option><option value="2">PROXY v2（二进制）</option></select>
   <label>来源白名单（每行一个 IP/CIDR，留空=不限制）</label><textarea id="f-allow" rows="2" placeholder="192.168.1.0/24"></textarea>
   <div style="display:flex;gap:10px">
     <div style="flex:1"><label>限速上限 Mbps（0=不限）</label><input id="f-mbps" type="number" min="0" value="0"></div>
@@ -263,11 +265,11 @@ function copyTok(btn,tok){navigator.clipboard.writeText(tok);btn.textContent='�
 function openRule(id){
   editingId=id||null;
   $('#dlgRuleTitle').textContent=id?'编辑规则':'新建规则';
-  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';$('#f-allow').value='';$('#f-mbps').value='0';$('#f-maxconns').value='0';
+  $('#f-name').value='';$('#f-proto').value='tcp';$('#f-listen').value='';$('#f-target').value='';$('#f-allow').value='';$('#f-mbps').value='0';$('#f-maxconns').value='0';$('#f-pp').value='0';
   if(id){api('/api/rules').then(rl=>{const x=rl.find(v=>v.id===id);if(!x)return;
       $('#f-name').value=x.name;$('#f-proto').value=x.proto;$('#f-listen').value=x.listen;
       $('#f-target').value=x.target;$('#f-allow').value=(x.allow_from||[]).join('\n');
-      $('#f-mbps').value=x.max_mbps||0;$('#f-maxconns').value=x.max_conns||0;
+      $('#f-mbps').value=x.max_mbps||0;$('#f-maxconns').value=x.max_conns||0;$('#f-pp').value=x.proxy_proto||0;
       $('#f-client').value=(x.side==='client'?'c:':'s:')+(x.client||'');syncListenLabel();});}
   else {$('#f-client').value='s:';syncListenLabel();}
   dlgRule.showModal();
@@ -326,7 +328,8 @@ function saveRule(){
     side:dir==='c'?'client':'server',client:client,
     listen:listen,target:$('#f-target').value.trim(),
     allow_from:$('#f-allow').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    max_mbps:+$('#f-mbps').value||0,max_conns:+$('#f-maxconns').value||0});
+    max_mbps:+$('#f-mbps').value||0,max_conns:+$('#f-maxconns').value||0,
+    proxy_proto:+$('#f-pp').value||0});
   const baseName=$('#f-name').value.trim();
   const m=listenStr.match(/^(\d{1,5})-(\d{1,5})$/);
   let task;

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"net"
 	"sync"
 	"time"
 
@@ -70,8 +69,8 @@ func (s *Server) probeRule(r config.Rule) (bool, string) {
 		}
 		_ = stream.Close()
 		return true, ""
-	default: // 正向与反向：目标都从服务器侧直拨
-		c, err := net.DialTimeout("tcp", r.Target, probeTimeout)
+	default: // 正向与反向：目标都从服务器侧直拨（多目标任一可达即健康）
+		c, err := dialBalanced(r.Target, &s.rr, probeTimeout)
 		if err != nil {
 			return false, err.Error()
 		}

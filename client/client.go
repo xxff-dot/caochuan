@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -34,6 +35,7 @@ type Client struct {
 	Cfg     *config.ClientConfig
 	Log     *logbuf.Ring
 	Version string // 程序版本，鉴权时上报
+	rr      atomic.Uint64
 }
 
 // Run 阻塞运行：连接 → 鉴权 → 收流；断线后指数退避重连，直到 ctx 取消。
@@ -189,24 +191,46 @@ func (c *Client) handleStream(stream net.Conn, rev *reverseMgr) {
 		return
 	}
 
-	backend, err := net.DialTimeout("tcp", hdr.Target, dialTimeout)
+	backend, err := c.dialBalanced(hdr.Target)
 	if err != nil {
 		slog.Warn("回源拨号失败", "target", hdr.Target, "err", err)
 		return
 	}
 	defer backend.Close()
 
+	if hdr.ProxyProto > 0 { // 按流头信息向目标写 PROXY 头，传递真实访客 IP
+		src, e1 := net.ResolveTCPAddr("tcp", hdr.Visitor)
+		dst, e2 := net.ResolveTCPAddr("tcp", hdr.DstAddr)
+		if e1 == nil && e2 == nil {
+			if b, err := relay.ProxyHeader(hdr.ProxyProto, src, dst); err == nil {
+				_, _ = backend.Write(b)
+			}
+		}
+	}
+
 	relay.Pipe(backend, stream, nil, nil, nil, 0)
+}
+
+// dialBalanced 轮询拨号多目标（逗号分隔），失败自动尝试下一个。
+func (c *Client) dialBalanced(target string) (net.Conn, error) {
+	targets := relay.ParseTargets(target)
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("目标地址为空")
+	}
+	start := int(c.rr.Add(1) - 1)
+	var lastErr error
+	for i := 0; i < len(targets); i++ {
+		backend, err := net.DialTimeout("tcp", targets[(start+i)%len(targets)], dialTimeout)
+		if err == nil {
+			return backend, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // handleUDPStream 在一条流里按 connID 分发到多个本地 UDP socket。
 func (c *Client) handleUDPStream(stream net.Conn, target string) {
-	tgt, err := net.ResolveUDPAddr("udp", target)
-	if err != nil {
-		slog.Warn("UDP 目标解析失败", "target", target, "err", err)
-		return
-	}
-
 	var wmu sync.Mutex // stream 写入互斥（多个后端 socket 同时回包）
 	writeBack := func(connID uint32, payload []byte) {
 		wmu.Lock()
@@ -234,7 +258,8 @@ func (c *Client) handleUDPStream(stream net.Conn, target string) {
 		mu.Lock()
 		b := backends[pkt.ConnID]
 		if b == nil {
-			if b, err = net.DialUDP("udp", nil, tgt); err == nil {
+			// 每个新会话轮询拨一个目标（重新解析，多目标故障转移 + DNS 跟随）
+			if b, err = relay.DialUDPBalanced(target, &c.rr); err == nil {
 				backends[pkt.ConnID] = b
 				go func(connID uint32, b *net.UDPConn) { // 回包 → 隧道
 					rbuf := make([]byte, 65535)

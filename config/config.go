@@ -19,18 +19,19 @@ import (
 //
 //	（Target 从服务器视角解析，可以是服务器本身或其内网）。
 type Rule struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Side      string   `json:"side,omitempty"` // "server"(默认) | "client"
-	Proto     string   `json:"proto"`          // "tcp" | "udp"
-	Listen    int      `json:"listen"`
-	Client    string   `json:"client"`
-	Target    string   `json:"target"`
-	AllowFrom []string `json:"allow_from,omitempty"` // 来源白名单（IP/CIDR），空=不限制
-	MaxMbps   int      `json:"max_mbps,omitempty"`   // 规则总带宽上限（Mbps），0=不限
-	MaxConns  int      `json:"max_conns,omitempty"`  // 最大并发连接/UDP 会话数，0=不限
-	IdleMin   int      `json:"idle_min,omitempty"`   // TCP 空闲超时（分钟），0=不限；UDP 会话固定 90s 过期
-	Enabled   bool     `json:"enabled"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Side       string   `json:"side,omitempty"` // "server"(默认) | "client"
+	Proto      string   `json:"proto"`          // "tcp" | "udp"
+	Listen     int      `json:"listen"`
+	Client     string   `json:"client"`
+	Target     string   `json:"target"`
+	AllowFrom  []string `json:"allow_from,omitempty"`  // 来源白名单（IP/CIDR），空=不限制
+	MaxMbps    int      `json:"max_mbps,omitempty"`    // 规则总带宽上限（Mbps），0=不限
+	MaxConns   int      `json:"max_conns,omitempty"`   // 最大并发连接/UDP 会话数，0=不限
+	IdleMin    int      `json:"idle_min,omitempty"`    // TCP 空闲超时（分钟），0=不限；UDP 会话固定 90s 过期
+	ProxyProto int      `json:"proxy_proto,omitempty"` // 0=关 1=PROXY v1 2=PROXY v2：向目标传递真实访客 IP（仅 TCP）
+	Enabled    bool     `json:"enabled"`
 }
 
 // SideOf 归一化 side 值。

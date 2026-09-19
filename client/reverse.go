@@ -141,6 +141,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 	case "tcp":
 		lim := relay.NewLimiter(r.MaxMbps)
 		var cnt atomic.Int64 // 本规则当前连接数
+		var rr atomic.Uint64 // 多目标轮询
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", r.Listen))
 		if err != nil {
 			m.report(proto.ReverseStatus{ID: r.ID, OK: false, Err: err.Error()})
@@ -158,7 +159,7 @@ func (m *reverseMgr) start(r proto.ReverseRule) {
 			if err != nil {
 				return // 关闭/会话断开
 			}
-			go m.handleTCP(r, conn, acl, lim, &cnt)
+			go m.handleTCP(r, conn, acl, lim, &cnt, &rr)
 		}
 	case "udp":
 		up, err := net.ListenUDP("udp", &net.UDPAddr{Port: r.Listen})
@@ -197,7 +198,7 @@ func (m *reverseMgr) openReverse(r proto.ReverseRule, udp bool) (net.Conn, error
 	return stream, nil
 }
 
-func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter, cnt *atomic.Int64) {
+func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *config.ACL, lim *relay.Limiter, cnt *atomic.Int64, rr *atomic.Uint64) {
 	if ap, err := netip.ParseAddrPort(visitor.RemoteAddr().String()); err == nil && !acl.Allows(ap.Addr()) {
 		slog.Warn("反向规则白名单拒绝连接", "rule", r.Name, "ip", ap.Addr())
 		_ = visitor.Close()
@@ -212,14 +213,49 @@ func (m *reverseMgr) handleTCP(r proto.ReverseRule, visitor net.Conn, acl *confi
 	}
 	defer cnt.Add(-1)
 	defer visitor.Close()
-	stream, err := m.openReverse(r, false)
-	if err != nil {
-		slog.Warn("反向回源开流失败", "rule", r.Name, "err", err)
-		return
-	}
-	defer stream.Close()
 
-	relay.Pipe(visitor, stream, nil, nil, lim, time.Duration(r.IdleMin)*time.Minute)
+	// 多目标轮询拨号（反向：目标由服务器侧拨，此处 target 列表经隧道传给 server）
+	var backend net.Conn
+	if r.ProxyProto > 0 {
+		// 需要传真实访客 IP：走带流头标记的开流，由 server 在拨目标后写 PROXY 头
+		hdr := proto.StreamHeader{ID: r.ID, Target: r.Target,
+			Visitor: visitor.RemoteAddr().String(), DstAddr: visitor.LocalAddr().String(), ProxyProto: r.ProxyProto}
+		stream, err := m.openReverseHDR(hdr)
+		if err != nil {
+			slog.Warn("反向回源开流失败", "rule", r.Name, "err", err)
+			return
+		}
+		backend = stream
+	} else {
+		stream, err := m.openReverse(r, false)
+		if err != nil {
+			slog.Warn("反向回源开流失败", "rule", r.Name, "err", err)
+			return
+		}
+		backend = stream
+	}
+	defer backend.Close()
+
+	relay.Pipe(visitor, backend, nil, nil, lim, time.Duration(r.IdleMin)*time.Minute)
+}
+
+// openReverseHDR 用指定流头开回源流（SOCKS5/反向 PROXY 用）。
+func (m *reverseMgr) openReverseHDR(hdr proto.StreamHeader) (net.Conn, error) {
+	m.mu.Lock()
+	sess := m.session
+	m.mu.Unlock()
+	if sess == nil {
+		return nil, fmt.Errorf("未连接服务器")
+	}
+	stream, err := sess.OpenStream()
+	if err != nil {
+		return nil, err
+	}
+	if err := proto.WriteJSONFrame(stream, hdr); err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+	return stream, nil
 }
 
 // udpRelay 本地 visitor ⇄ 隧道 UDP 帧流（镜像 server.udpTunnelRelay，方向相反）。

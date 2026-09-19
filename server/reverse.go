@@ -42,12 +42,21 @@ func (s *Server) handleReverseStream(cc *clientConn, stream net.Conn) {
 		return
 	}
 
-	backend, err := net.DialTimeout("tcp", hdr.Target, 5*time.Second)
+	backend, err := dialBalanced(hdr.Target, &s.rr, 5*time.Second)
 	if err != nil {
 		slog.Warn("反向回源拨号失败", "client", cc.Name, "target", hdr.Target, "err", err)
 		return
 	}
 	defer backend.Close()
+	if hdr.ProxyProto > 0 && hdr.Visitor != "" { // 把真实访客 IP 写进 PROXY 头
+		if src, e1 := net.ResolveTCPAddr("tcp", hdr.Visitor); e1 == nil {
+			if dst, e2 := net.ResolveTCPAddr("tcp", hdr.DstAddr); e2 == nil {
+				if b, perr := relay.ProxyHeader(hdr.ProxyProto, src, dst); perr == nil {
+					_, _ = backend.Write(b)
+				}
+			}
+		}
+	}
 	st.ConnsTotal.Add(1)
 	st.Conns.Add(1)
 	defer st.Conns.Add(-1)
@@ -57,9 +66,8 @@ func (s *Server) handleReverseStream(cc *clientConn, stream net.Conn) {
 
 // udpBackendFromStream 处理反向 UDP 流：connID → 服务器侧到 target 的 socket（镜像 client 同名逻辑）。
 func (s *Server) udpBackendFromStream(st *Stat, target string, stream net.Conn) {
-	tgt, err := net.ResolveUDPAddr("udp", target)
-	if err != nil {
-		slog.Warn("反向 UDP 目标解析失败", "target", target, "err", err)
+	if relay.ParseTargets(target) == nil {
+		slog.Warn("反向 UDP 目标为空", "target", target)
 		return
 	}
 
@@ -89,27 +97,32 @@ func (s *Server) udpBackendFromStream(st *Stat, target string, stream net.Conn) 
 		mu.Lock()
 		b := backends[pkt.ConnID]
 		if b == nil {
-			if b, err = net.DialUDP("udp", nil, tgt); err == nil {
-				backends[pkt.ConnID] = b
-				st.Conns.Add(1)
-				go func(connID uint32, b *net.UDPConn) { // target 回包 → 隧道
-					rbuf := make([]byte, 65535)
-					for {
-						_ = b.SetReadDeadline(time.Now().Add(udpIdle))
-						n, err := b.Read(rbuf)
-						if err != nil {
-							break
-						}
-						writeBack(connID, rbuf[:n])
-						st.BytesOut.Add(int64(n))
-					}
-					mu.Lock()
-					delete(backends, connID)
-					mu.Unlock()
-					_ = b.Close()
-					st.Conns.Add(-1)
-				}(pkt.ConnID, b)
+			// 每个新会话轮询拨一个目标（重新解析，多目标故障转移 + DNS 跟随）
+			nb, derr := relay.DialUDPBalanced(target, &s.rr)
+			if derr != nil {
+				mu.Unlock()
+				continue
 			}
+			b = nb
+			backends[pkt.ConnID] = b
+			st.Conns.Add(1)
+			go func(connID uint32, b *net.UDPConn) { // target 回包 → 隧道
+				rbuf := make([]byte, 65535)
+				for {
+					_ = b.SetReadDeadline(time.Now().Add(udpIdle))
+					n, err := b.Read(rbuf)
+					if err != nil {
+						break
+					}
+					writeBack(connID, rbuf[:n])
+					st.BytesOut.Add(int64(n))
+				}
+				mu.Lock()
+				delete(backends, connID)
+				mu.Unlock()
+				_ = b.Close()
+				st.Conns.Add(-1)
+			}(pkt.ConnID, b)
 		}
 		mu.Unlock()
 		if b != nil && err == nil {
@@ -173,7 +186,7 @@ func (s *Server) pushRulesTo(cc *clientConn) {
 		if r.SideOf() == "client" && r.Client == cc.Name && r.Enabled {
 			rules = append(rules, proto.ReverseRule{ID: r.ID, Name: r.Name, Proto: r.Proto,
 				Listen: r.Listen, Target: r.Target, AllowFrom: r.AllowFrom,
-				MaxMbps: r.MaxMbps, MaxConns: r.MaxConns, IdleMin: r.IdleMin})
+				MaxMbps: r.MaxMbps, MaxConns: r.MaxConns, IdleMin: r.IdleMin, ProxyProto: r.ProxyProto})
 		}
 	}
 	cs := cc.cs

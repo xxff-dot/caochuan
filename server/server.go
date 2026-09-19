@@ -71,6 +71,7 @@ type Server struct {
 	notifier  *notifier
 	authFails map[string]*authFail // 隧道来源 IP → token 爆破记录
 	blVer     atomic.Int64         // 黑名单版本号：变更后监听循环重编译黑名单
+	rr        atomic.Uint64        // 多目标轮询计数（server 侧拨号）
 	started   time.Time
 	stopping  bool
 }

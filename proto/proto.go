@@ -29,9 +29,12 @@ type AuthReply struct {
 // StreamHeader 每个 smux 数据流的第一帧。
 // UDP=true 时，后续载荷为 UDP 帧序列；否则为裸 TCP 字节流。
 type StreamHeader struct {
-	ID     string `json:"id,omitempty"` // 规则 ID，供对端归集统计
-	Target string `json:"target"`
-	UDP    bool   `json:"udp,omitempty"`
+	ID         string `json:"id,omitempty"` // 规则 ID，供对端归集统计
+	Target     string `json:"target"`
+	UDP        bool   `json:"udp,omitempty"`
+	Visitor    string `json:"visitor,omitempty"` // 真实访客地址 ip:port（proxy_proto 用）
+	DstAddr    string `json:"dst,omitempty"`     // 访客连接的目的地址 ip:port（proxy_proto 用）
+	ProxyProto int    `json:"pp,omitempty"`      // 1=v1 2=v2：对端回源时向目标写 PROXY 头
 }
 
 // UDPPacket UDP 隧道帧。
@@ -46,15 +49,16 @@ const ControlID = "__control__"
 
 // ReverseRule 下发给 client 的反向监听条目（Side=client 的规则）。
 type ReverseRule struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Proto     string   `json:"proto"`
-	Listen    int      `json:"listen"`
-	Target    string   `json:"target"`
-	AllowFrom []string `json:"allow_from,omitempty"`
-	MaxMbps   int      `json:"max_mbps,omitempty"`
-	MaxConns  int      `json:"max_conns,omitempty"`
-	IdleMin   int      `json:"idle_min,omitempty"` // TCP 空闲超时（分钟），0=不限
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Proto      string   `json:"proto"`
+	Listen     int      `json:"listen"`
+	Target     string   `json:"target"`
+	AllowFrom  []string `json:"allow_from,omitempty"`
+	MaxMbps    int      `json:"max_mbps,omitempty"`
+	MaxConns   int      `json:"max_conns,omitempty"`
+	IdleMin    int      `json:"idle_min,omitempty"`    // TCP 空闲超时（分钟），0=不限
+	ProxyProto int      `json:"proxy_proto,omitempty"` // 0=关 1=v1 2=v2
 }
 
 // RulePush 控制流 server→client 帧。
